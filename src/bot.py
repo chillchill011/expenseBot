@@ -4,7 +4,7 @@ load_dotenv()
 import os
 import asyncio
 import nest_asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -98,12 +98,15 @@ class ExpenseBot:
     def _get_month_data(self, year_month: str) -> dict:
         """Get expense data for a specific month"""
         try:
+            print(f"Getting data for month: {year_month}")  # Debug print
             result = self.sheets_service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
                 range=f'{year_month}!A:E'
             ).execute()
             
             values = result.get('values', [])
+            print(f"Retrieved values: {values}")  # Debug print
+            
             if len(values) <= 1:  # Only headers or empty
                 return {'total': 0, 'users': {}}
                 
@@ -111,16 +114,22 @@ class ExpenseBot:
             users = {}
             
             for row in values[1:]:  # Skip header
-                amount = float(row[1])
-                user = row[4]
-                total += amount
-                users[user] = users.get(user, 0) + amount
+                if len(row) >= 2:  # Make sure row has enough columns
+                    try:
+                        amount = float(row[1])
+                        user = row[4] if len(row) > 4 else "Unknown"
+                        total += amount
+                        users[user] = users.get(user, 0) + amount
+                    except (ValueError, IndexError) as e:
+                        print(f"Error processing row {row}: {e}")  # Debug print
+                        continue
                 
-            return {
-                'total': total,
-                'users': users
-            }
-        except Exception:
+            result_data = {'total': total, 'users': users}
+            print(f"Processed data: {result_data}")  # Debug print
+            return result_data
+            
+        except Exception as e:
+            print(f"Error getting month data for {year_month}: {e}")  # Debug print
             return {'total': 0, 'users': {}}
 
     def _get_relative_month(self, months_back: int) -> str:
@@ -133,10 +142,7 @@ class ExpenseBot:
 
 
     async def view_categories(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """View all categories and their expenses"""
         try:
-            print("Starting view_categories function")  # Debug print
-            # Get unique categories and their totals for current month
             current_month = datetime.now().strftime('%Y-%m')
             result = self.sheets_service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
@@ -146,31 +152,32 @@ class ExpenseBot:
             values = result.get('values', [])
             category_totals = {}
             
-            # Calculate totals for each category
+            # Calculate totals with error handling
             for row in values[1:]:  # Skip header
-                if len(row) >= 4:
-                    category = row[3]
-                    amount = float(row[1])
-                    category_totals[category] = category_totals.get(category, 0) + amount
+                try:
+                    if len(row) >= 4:
+                        category = row[3]
+                        amount = float(row[1] if row[1] else 0)
+                        category_totals[category] = category_totals.get(category, 0) + amount
+                except (ValueError, IndexError):
+                    continue
             
-            # Create keyboard with categories and their totals
             keyboard = []
             row = []
             unique_categories = sorted(set(self.categories.values()))
-            print(f"Found categories: {unique_categories}")  # Debug print
             
             for idx, category in enumerate(unique_categories):
-                emoji = self._get_category_emoji(category)
-                total = category_totals.get(category, 0)
-                button_text = f"{emoji} {category} (${total:.0f})"
-                callback_data = f"view_cat_{category}_0"  # Changed this
-                print(f"Creating button with callback: {callback_data}")  # Debug print
-                button = InlineKeyboardButton(button_text, callback_data=callback_data)
-                row.append(button)
-                
-                if len(row) == 2 or idx == len(unique_categories) - 1:
-                    keyboard.append(row)
-                    row = []
+                if category:  # Skip empty categories
+                    emoji = self._get_category_emoji(category)
+                    total = category_totals.get(category, 0)
+                    button_text = f"{emoji} {category} (₹{total:.0f})"
+                    callback_data = f"viewcat_{category}_0"
+                    button = InlineKeyboardButton(button_text, callback_data=callback_data)
+                    row.append(button)
+                    
+                    if len(row) == 2 or idx == len(unique_categories) - 1:
+                        keyboard.append(row)
+                        row = []
             
             await update.message.reply_text(
                 "📊 Select a category to view its expenses:\n"
@@ -300,11 +307,11 @@ class ExpenseBot:
                 await update.message.reply_text(
                     f"⚠️ You are updating this entry:\n\n"
                     f"From:\n"
-                    f"Amount: ${float(last_entry[1]):.2f}\n"
+                    f"Amount: ₹{float(last_entry[1]):.2f}\n"
                     f"Description: {last_entry[2]}\n"
                     f"Category: {last_entry[3]}\n\n"
                     f"To:\n"
-                    f"Amount: ${new_amount:.2f}\n"
+                    f"Amount: ₹{new_amount:.2f}\n"
                     f"Description: {new_description}\n"
                     f"Category: {new_category}\n\n"
                     f"Do you want to proceed?",
@@ -351,7 +358,7 @@ class ExpenseBot:
             await update.message.reply_text(
                 f"Do you want to delete this entry?\n\n"
                 f"Date: {last_entry[0]}\n"
-                f"Amount: ${float(last_entry[1]):.2f}\n"
+                f"Amount: ₹{float(last_entry[1]):.2f}\n"
                 f"Description: {last_entry[2]}\n"
                 f"Category: {last_entry[3]}",
                 reply_markup=InlineKeyboardMarkup(keyboard)
@@ -408,7 +415,7 @@ class ExpenseBot:
                 ).execute()
 
                 # Add headers
-                headers = [['Date', 'Amount', 'Description', 'Category', 'User']]
+                headers = [['Date', 'Amount', 'Description', 'Category', 'User', 'Details']]
                 self.sheets_service.spreadsheets().values().update(
                     spreadsheetId=self.spreadsheet_id,
                     range=f'{current_month}!A1:E1',
@@ -425,75 +432,46 @@ class ExpenseBot:
             raise
 
     async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle regular expense messages."""
         try:
             text = update.message.text
-            print(f"Processing message: {text}")  # Debug print
-        
-            try:
-                # Try to split into amount and description
-                first_word, *rest = text.split()
-                amount = float(first_word)  # Try to convert first word to number
-                description = ' '.join(rest)
-            except ValueError:
-                print(f"Invalid format: {text}")  # Debug print
-                await update.message.reply_text(
-                    "❌ Invalid format! Please use: <amount> <description>\n"
-                    "Examples:\n"
-                    "50 milk\n"
-                    "100.50 uber\n"
-                    "1500 rent"
-                )
-                return
-
-            if not description:
-                await update.message.reply_text("❌ Please provide a description for the expense!")
-                return
-
-            print(f"Amount: {amount}, Description: {description}")  # Debug print
-
-            # Get category
+            
+            # Extract amount
+            parts = text.split()
+            amount = float(parts[0])
+            
+            # Description is the first word after amount
+            description = parts[1]
+            
+            # Everything after description becomes details
+            details = ' '.join(parts[2:]) if len(parts) > 2 else ""
+            
             category = self._get_category(description.lower())
-            print(f"Found category: {category}")  # Debug print
-
+            
             if not category:
                 keyboard = self._create_category_keyboard(description, amount)
-                await update.message.reply_text(
-                    "📝 Please select a category for this expense:",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
+                await update.message.reply_text("📝 Select category:", reply_markup=InlineKeyboardMarkup(keyboard))
                 return
-
-            # Add expense to sheet
-            try:
-                self._ensure_monthly_sheet_exists()  # Ensure sheet exists
-                self._add_expense(
-                    amount=amount,
-                    description=description,
-                    category=category,
-                    user=update.effective_user.username or "Unknown"
-                )
             
-                # Success message with emoji
-                await update.message.reply_text(
-                    f"✅ Expense added successfully!\n\n"
-                    f"Amount: ${amount:.2f}\n"
-                    f"Description: {description}\n"
-                    f"Category: {category}"
-                )
-            
-            except Exception as e:
-                print(f"Error adding expense to sheet: {e}")  # Debug print
-                await update.message.reply_text(
-                    "❌ Sorry, there was an error adding your expense. Please try again."
-                )
-                raise
-
-        except Exception as e:
-            print(f"Unexpected error in handle_expense: {e}")  # Debug print
-            await update.message.reply_text(
-                "❌ Something went wrong. Please try again with the format: <amount> <description>"
+            self._add_expense(
+                amount=amount, 
+                description=description, 
+                category=category, 
+                user=update.effective_user.username or "Unknown", 
+                details=details
             )
+            
+            msg = f"✅ Added:\nAmount: ₹{amount:.2f}\nDescription: {description}"
+            msg += f"\nCategory: {category}"
+            if details:
+                msg += f"\nDetails: {details}"
+            
+            await update.message.reply_text(msg)
+        
+        except ValueError:
+            await update.message.reply_text("❌ Invalid amount format")
+        except Exception as e:
+            print(f"Error: {e}")
+            await update.message.reply_text("❌ Error adding expense")
 
     def _load_categories(self) -> dict:
         """Load categories from master sheet."""
@@ -524,28 +502,36 @@ class ExpenseBot:
     def _get_category(self, description: str) -> str:
         """Get category for expense description."""
         description = description.lower()
-        return self.categories.get(description)
+        
+        # Check for exact match first
+        if description in self.categories:
+            return self.categories[description]
+        
+        # Check if any part of description matches a category
+        for key in self.categories.keys():
+            if key in description:
+                return self.categories[key]
+        
+        return None
 
-    def _add_expense(self, amount: float, description: str, category: str, user: str):
-        """Add expense to current month's sheet."""
+    def _add_expense(self, amount: float, description: str, category: str, user: str, details: str = ""):
         try:
             current_month = datetime.now().strftime('%Y-%m')
             date = datetime.now().strftime('%Y/%m/%d')
             
-            values = [[date, amount, description, category, user]]
+            values = [[date, amount, description, category, user, details]]
             print(f"Adding to sheet {current_month}: {values}")
             
             result = self.sheets_service.spreadsheets().values().append(
                 spreadsheetId=self.spreadsheet_id,
-                range=f'{current_month}!A:E',
+                range=f'{current_month}!A:F',
                 valueInputOption='USER_ENTERED',
                 insertDataOption='INSERT_ROWS',
                 body={'values': values}
             ).execute()
             
-            print(f"Successfully added expense: {result}")
             return True
-            
+                
         except Exception as e:
             print(f"Error in _add_expense:")
             print(f"- Sheet ID: {self.spreadsheet_id}")
@@ -594,7 +580,7 @@ class ExpenseBot:
             
             await query.edit_message_text(
                 f"Added expense:\n"
-                f"Amount: ${amount:.2f}\n"
+                f"Amount: ₹{amount:.2f}\n"
                 f"Description: {description}\n"
                 f"Category: {category}"
             )
@@ -723,14 +709,14 @@ class ExpenseBot:
                 
                 # Create message
                 message = f"{emoji} {category} Expenses\n\n"
-                message += f"Total: ${total:.2f}\n"
+                message += f"Total: ₹{total:.2f}\n"
                 message += f"Number of expenses: {len(category_expenses)}\n\n"
                 
                 for row in page_expenses:
                     date = row[0]
                     amount = float(row[1])
                     desc = row[2]
-                    message += f"• {date}: ${amount:.2f} - {desc}\n"
+                    message += f"• {date}: ₹{amount:.2f} - {desc}\n"
                 
                 # Create navigation buttons
                 keyboard = []
@@ -762,93 +748,42 @@ class ExpenseBot:
         elif query.data.startswith('compare_'):
             try:
                 comparison_type = query.data.split('_')[1:]
-                message = ""  # Initialize message variable
+                current_month = datetime.now().strftime('%Y-%m')
+                last_month = self._get_relative_month(1)
                 
-                if query.data == "compare_back":
-                    # Recreate comparison options
-                    keyboard = [
-                        [InlineKeyboardButton("Current vs Last Month", callback_data="compare_last_1")],
-                        [InlineKeyboardButton("Last Month vs Previous", callback_data="compare_last_2")],
-                        [InlineKeyboardButton("Current Year Monthly", callback_data="compare_year")]
-                    ]
-                    await query.edit_message_text(
-                        "📊 Select comparison type:",
-                        reply_markup=InlineKeyboardMarkup(keyboard)
-                    )
-                    return
+                # Get data
+                current_data = self._get_month_data(current_month)
+                last_data = self._get_month_data(last_month)
                 
-                if 'last_1' in comparison_type:
-                    # Current vs Last Month
-                    current_month = datetime.now().strftime('%Y-%m')
-                    last_month = self._get_relative_month(1)
-                    
-                    current_data = self._get_month_data(current_month)
-                    last_data = self._get_month_data(last_month)
-                    
-                    message = "📊 Month Comparison\n\n"
-                    message += f"Current Month ({current_month}):\n"
-                    message += f"Total: ${current_data['total']:.2f}\n\n"
-                    message += f"Last Month ({last_month}):\n"
-                    message += f"Total: ${last_data['total']:.2f}\n\n"
-                    
-                    if last_data['total'] != 0:
-                        difference = current_data['total'] - last_data['total']
-                        percentage = (difference / last_data['total'] * 100)
-                        message += f"Difference: ${abs(difference):.2f}\n"
-                        message += f"Change: {'+' if difference > 0 else ''}{percentage:.1f}%"
-                    else:
-                        message += "Unable to calculate difference (no data for last month)"
-                    
-                elif 'last_2' in comparison_type:
-                    # Last Month vs Previous
-                    last_month = self._get_relative_month(1)
-                    previous_month = self._get_relative_month(2)
-                    
-                    last_data = self._get_month_data(last_month)
-                    previous_data = self._get_month_data(previous_month)
-                    
-                    message = "📊 Previous Months Comparison\n\n"
-                    message += f"Last Month ({last_month}):\n"
-                    message += f"Total: ${last_data['total']:.2f}\n\n"
-                    message += f"Previous Month ({previous_month}):\n"
-                    message += f"Total: ${previous_data['total']:.2f}\n\n"
-                    
-                    if previous_data['total'] != 0:
-                        difference = last_data['total'] - previous_data['total']
-                        percentage = (difference / previous_data['total'] * 100)
-                        message += f"Difference: ${abs(difference):.2f}\n"
-                        message += f"Change: {'+' if difference > 0 else ''}{percentage:.1f}%"
-                    else:
-                        message += "Unable to calculate difference (no data for previous month)"
-                    
-                elif 'year' in comparison_type:
-                    # Current Year Monthly
-                    current_year = datetime.now().year
-                    message = f"📅 {current_year} Monthly Totals\n\n"
-                    
-                    has_data = False
-                    for month in range(1, 13):
-                        month_str = f"{current_year}-{month:02d}"
-                        data = self._get_month_data(month_str)
-                        if data['total'] > 0:
-                            has_data = True
-                            message += f"{month_str}: ${data['total']:.2f}\n"
-                    
-                    if not has_data:
-                        message += "No expenses recorded for this year yet."
+                # Initialize message
+                message = "📊 Expense Comparison\n\n"
                 
-                # Add back button
+                # Add current month data
+                message += f"Current Month ({current_month})\n"
+                message += f"Total: ₹{current_data['total']:.2f}\n\n"
+                
+                # Add last month data
+                message += f"Last Month ({last_month})\n"
+                message += f"Total: ₹{last_data['total']:.2f}\n\n"
+                
+                # Calculate change
+                if last_data['total'] > 0:
+                    diff = current_data['total'] - last_data['total']
+                    pct = (diff / last_data['total']) * 100
+                    message += f"{'📈' if diff > 0 else '📉'} Change: {pct:+.1f}%"
+                else:
+                    message += "No expenses in last month for comparison"
+                    
                 await query.edit_message_text(
                     message,
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton("◀️ Back", callback_data="compare_back")
                     ]])
                 )
-                
             except Exception as e:
-                print(f"Error in comparison: {e}")
+                print(f"Comparison error: {e}")
                 await query.edit_message_text(
-                    "❌ Error generating comparison.",
+                    "❌ Error generating comparison",
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton("◀️ Back", callback_data="compare_back")
                     ]])
@@ -863,19 +798,19 @@ class ExpenseBot:
                 month = datetime.now().strftime('%Y-%m')
                 data = self._get_month_data(month)
                 message += f"Current Month ({month})\n"
-                message += f"Total Expenses: ${data['total']:.2f}\n\n"
+                message += f"Total Expenses: ₹{data['total']:.2f}\n\n"
                 message += "By User:\n"
                 for user, amount in data['users'].items():
-                    message += f"{user}: ${amount:.2f}\n"
+                    message += f"{user}: ₹{amount:.2f}\n"
                     
             elif period == 'last':
                 month = self._get_relative_month(1)
                 data = self._get_month_data(month)
                 message += f"Last Month ({month})\n"
-                message += f"Total Expenses: ${data['total']:.2f}\n\n"
+                message += f"Total Expenses: ₹{data['total']:.2f}\n\n"
                 message += "By User:\n"
                 for user, amount in data['users'].items():
-                    message += f"{user}: ${amount:.2f}\n"
+                    message += f"{user}: ₹{amount:.2f}\n"
                     
             elif period == 'last3':
                 message = "Last 3 Months:\n\n"
@@ -883,9 +818,9 @@ class ExpenseBot:
                 for i in range(3):
                     month = self._get_relative_month(i)
                     data = self._get_month_data(month)
-                    message += f"{month}: ${data['total']:.2f}\n"
+                    message += f"{month}: ₹{data['total']:.2f}\n"
                     total += data['total']
-                message += f"\nTotal: ${total:.2f}"
+                message += f"\nTotal: ₹{total:.2f}"
                 
             elif period in ['year', 'lastyear']:
                 year = datetime.now().year if period == 'year' else datetime.now().year - 1
@@ -895,9 +830,9 @@ class ExpenseBot:
                     month_str = f"{year}-{month:02d}"
                     data = self._get_month_data(month_str)
                     if data['total'] > 0:
-                        message += f"{month_str}: ${data['total']:.2f}\n"
+                        message += f"{month_str}: ₹{data['total']:.2f}\n"
                         total += data['total']
-                message += f"\nTotal: ${total:.2f}"
+                message += f"\nTotal: ₹{total:.2f}"
             
             await query.edit_message_text(
                 message,
@@ -926,61 +861,46 @@ class ExpenseBot:
 
 
 async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle regular expense messages."""
     try:
         text = update.message.text
-        print(f"Received message: {text}")  # Debug print
         
-        amount, *description = text.split()
-        amount = float(amount)
-        description = ' '.join(description)
+        # Extract amount
+        parts = text.split()
+        amount = float(parts[0])
         
-        # Get category
-        category = self._get_category(description)
-        print(f"Found category: {category}")  # Debug print
+        # Description is the first word after amount
+        description = parts[1]
+        
+        # Everything after description becomes details
+        details = ' '.join(parts[2:]) if len(parts) > 2 else ""
+        
+        category = self._get_category(description.lower())
         
         if not category:
-            # Ask user to choose category
             keyboard = self._create_category_keyboard(description, amount)
-            await update.message.reply_text(
-                "Please select a category:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            await update.message.reply_text("📝 Select category:", reply_markup=InlineKeyboardMarkup(keyboard))
             return
         
-        # Add expense to sheet
-        try:
-            self._add_expense(
-                amount=amount,
-                description=description,
-                category=category,
-                user=update.effective_user.username
-            )
-            print(f"Added expense: {amount} {description} {category}")  # Debug print
-            
-            await update.message.reply_text(
-                f"Added expense:\n"
-                f"Amount: ${amount:.2f}\n"
-                f"Description: {description}\n"
-                f"Category: {category}"
-            )
-        except Exception as e:
-            print(f"Error adding expense to sheet: {e}")  # Debug print
-            await update.message.reply_text(
-                "Sorry, there was an error adding your expense. Please try again."
-            )
-            
-    except ValueError as e:
-        print(f"Value error: {e}")  # Debug print
-        await update.message.reply_text(
-            "Please use the format: <amount> <description>\n"
-            "Example: 50 milk"
+        self._add_expense(
+            amount=amount, 
+            description=description, 
+            category=category, 
+            user=update.effective_user.username or "Unknown", 
+            details=details
         )
+        
+        msg = f"✅ Added:\nAmount: ₹{amount:.2f}\nDescription: {description}"
+        msg += f"\nCategory: {category}"
+        if details:
+            msg += f"\nDetails: {details}"
+        
+        await update.message.reply_text(msg)
+    
+    except ValueError:
+        await update.message.reply_text("❌ Invalid amount format")
     except Exception as e:
-        print(f"Unexpected error: {e}")  # Debug print
-        await update.message.reply_text(
-            "Sorry, something went wrong. Please try again."
-        )
+        print(f"Error: {e}")
+        await update.message.reply_text("❌ Error adding expense")
 
 
 
