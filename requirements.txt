@@ -1,5 +1,6 @@
-python-telegram-bot==20.8
+python-telegram-bot[all]
 google-api-python-client==2.108.0
 google-auth-httplib2==0.1.1
 google-auth-oauthlib==1.1.0
 python-dotenv==1.0.0
+nest_asyncio==1.5.8

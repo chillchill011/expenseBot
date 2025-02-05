@@ -1,5 +1,9 @@
+from dotenv import load_dotenv
+load_dotenv()
 # Core bot implementation with essential components
 import os
+import asyncio
+import nest_asyncio
 from datetime import datetime
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,6 +18,8 @@ from telegram.ext import (
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
+
+nest_asyncio.apply()
 
 # Configure logging
 logging.basicConfig(
@@ -185,28 +191,42 @@ class ExpenseBot:
         # Update local cache
         self.categories[description.lower()] = category
 
-def main():
-    """Main function to run the bot."""
+async def main():
     # Load configuration
     token = os.getenv('TELEGRAM_TOKEN')
     spreadsheet_id = os.getenv('SPREADSHEET_ID')
     credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH')
     
+    # Add error checking
+    if not all([token, spreadsheet_id, credentials_path]):
+        print("Error: Missing environment variables")
+        print(f"TELEGRAM_TOKEN: {'Set' if token else 'Missing'}")
+        print(f"SPREADSHEET_ID: {'Set' if spreadsheet_id else 'Missing'}")
+        print(f"GOOGLE_CREDENTIALS_PATH: {'Set' if credentials_path else 'Missing'}")
+        return
+    
     # Initialize bot
     bot = ExpenseBot(token, spreadsheet_id, credentials_path)
     
     # Create application
-    application = Application.builder().token(token).build()
+    app = Application.builder().token(token).build()
     
     # Add handlers
-    application.add_handler(CommandHandler("start", bot.start))
-    application.add_handler(MessageHandler(
+    app.add_handler(CommandHandler("start", bot.start))
+    app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, bot.handle_expense
     ))
-    application.add_handler(CallbackQueryHandler(bot.button_handler))
+    app.add_handler(CallbackQueryHandler(bot.button_handler))
     
-    # Run bot
-    application.run_polling()
+    print("Starting bot...")
+    
+    # Start the bot
+    await app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nBot stopped gracefully")
+    except Exception as e:
+        print(f"Error running bot: {e}")
