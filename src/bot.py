@@ -47,15 +47,155 @@ class ExpenseBot:
             "Welcome to the Expense Tracker Bot!\n\n"
             "Commands:\n"
             "• Simply type amount and description (e.g., '50 milk')\n"
-            "• /invest - Add investment\n"
-            "• /view - View categories with expenses\n"
+            "• /edit - Modify last entry\n"
+            "• /delete - Remove last entry\n"
             "• /summary - View monthly summary\n"
             "• /compare - Compare expenses\n"
             "• /categories - Add expense to category\n"
-            "• /edit - Modify last entry\n"
-            "• /delete - Remove last entry"
+            "• /view - View categories with expenses\n"
+            "• /invest - Add investment\n"
+            "• /inv_compare - View investment summary"
         )
         await update.message.reply_text(welcome_message)
+
+
+
+    def _ensure_investment_sheets_exist(self):
+        """Ensure investment sheets exist with proper headers"""
+        try:
+            current_year = datetime.now().year
+            year_sheet = f"{current_year} Overview"
+            
+            # Check if sheet exists
+            sheet_metadata = self.sheets_service.spreadsheets().get(
+                spreadsheetId=self.spreadsheet_id
+            ).execute()
+            
+            existing_sheets = sheet_metadata.get('sheets', [])
+            sheet_exists = any(
+                sheet['properties']['title'] == year_sheet 
+                for sheet in existing_sheets
+            )
+
+            if not sheet_exists:
+                print(f"Creating new investment sheet for {year_sheet}")
+                # Create yearly overview sheet
+                requests = [{
+                    'addSheet': {
+                        'properties': {
+                            'title': year_sheet
+                        }
+                    }
+                }]
+                
+                self.sheets_service.spreadsheets().batchUpdate(
+                    spreadsheetId=self.spreadsheet_id,
+                    body={'requests': requests}
+                ).execute()
+
+                # Add headers
+                headers = [['Date', 'Amount', 'Category', 'User', 'Description', 'Returns', 'Return Date']]
+                self.sheets_service.spreadsheets().values().update(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=f'{year_sheet}!A1:G1',
+                    valueInputOption='USER_ENTERED',
+                    body={'values': headers}
+                ).execute()
+                
+                print(f"Created investment sheet {year_sheet} with headers")
+                
+            return True
+                
+        except Exception as e:
+            print(f"Error ensuring investment sheet exists: {e}")
+            raise
+
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle all messages"""
+        try:
+            print(f"Received message in chat type: {update.message.chat.type}")  # Debug print
+            text = update.message.text.strip()
+            
+            if update.message.chat.type in ['group', 'supergroup']:
+                print(f"Group message: {text}")  # Debug print
+                # Only process if message starts with a number
+                if text and any(text.startswith(str(i)) for i in range(10)):
+                    await self.handle_expense(update, context)
+                else:
+                    print("Message doesn't start with number, ignoring")  # Debug print
+            else:
+                print(f"Private message: {text}")  # Debug print
+                await self.handle_expense(update, context)
+                
+        except Exception as e:
+            print(f"Error in handle_message: {e}")
+
+    async def invest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle investment command"""
+        try:
+            if not context.args or len(context.args) < 1:
+                await update.message.reply_text(
+                    "❌ Format: /invest <amount> [description]\n"
+                    "Example: /invest 1000 stock purchase"
+                )
+                return
+
+            amount = float(context.args[0])
+            description = ' '.join(context.args[1:]) if len(context.args) > 1 else ""
+            
+            # Get investment categories from Investment Master sheet
+            result = self.sheets_service.spreadsheets().values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range='Investment Master!A:C'
+            ).execute()
+            
+            categories = result.get('values', [])[1:]  # Skip header
+            
+            # Create category keyboard
+            keyboard = []
+            row = []
+            for idx, cat in enumerate(categories):
+                category = cat[0]
+                risk = cat[1]
+                callback_data = f"invest_{amount}_{category}"
+                if description:
+                    callback_data += f"_{description}"
+                button = InlineKeyboardButton(f"{category} ({risk})", callback_data=callback_data)
+                row.append(button)
+                
+                if len(row) == 2 or idx == len(categories) - 1:
+                    keyboard.append(row)
+                    row = []
+            
+            await update.message.reply_text(
+                "Select investment category:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+        except ValueError:
+            await update.message.reply_text("❌ Invalid amount format")
+        except Exception as e:
+            print(f"Error in invest command: {e}")
+            await update.message.reply_text("❌ Error processing investment")
+
+
+    async def compare_investments(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Compare investments across years"""
+        try:
+            keyboard = [
+                [InlineKeyboardButton("Current Month", callback_data="inv_compare_month")],
+                [InlineKeyboardButton("Current Year", callback_data="inv_compare_year")],
+                [InlineKeyboardButton("Year-to-Year", callback_data="inv_compare_years")]
+            ]
+            
+            await update.message.reply_text(
+                "📊 Select investment comparison:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            print(f"Error in investment comparison: {e}")
+            await update.message.reply_text("❌ Error showing comparison options")
 
 
     async def compare_expenses(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -74,6 +214,7 @@ class ExpenseBot:
         except Exception as e:
             print(f"Error in compare_expenses: {e}")
             await update.message.reply_text("❌ Error showing comparison options.")
+
 
     async def show_summary(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show expense summary for different periods"""
@@ -380,6 +521,57 @@ class ExpenseBot:
         return None
 
 
+    def _ensure_investment_sheets_exist(self):
+        """Ensure investment sheets exist with proper headers"""
+        try:
+            current_year = datetime.now().year
+            year_sheet = f"{current_year} Overview"
+            
+            # Check if sheet exists
+            sheet_metadata = self.sheets_service.spreadsheets().get(
+                spreadsheetId=self.spreadsheet_id
+            ).execute()
+            
+            existing_sheets = sheet_metadata.get('sheets', [])
+            sheet_exists = any(
+                sheet['properties']['title'] == year_sheet 
+                for sheet in existing_sheets
+            )
+
+            if not sheet_exists:
+                print(f"Creating new investment sheet for {year_sheet}")
+                # Create yearly overview sheet
+                requests = [{
+                    'addSheet': {
+                        'properties': {
+                            'title': year_sheet
+                        }
+                    }
+                }]
+                
+                self.sheets_service.spreadsheets().batchUpdate(
+                    spreadsheetId=self.spreadsheet_id,
+                    body={'requests': requests}
+                ).execute()
+
+                # Add headers
+                headers = [['Date', 'Amount', 'Category', 'User', 'Description', 'Returns', 'Return Date']]
+                self.sheets_service.spreadsheets().values().update(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=f'{year_sheet}!A1:G1',
+                    valueInputOption='USER_ENTERED',
+                    body={'values': headers}
+                ).execute()
+                
+                print(f"Created investment sheet {year_sheet} with headers")
+            
+            return True
+                
+        except Exception as e:
+            print(f"Error ensuring investment sheet exists: {e}")
+            raise
+
+
     def _ensure_monthly_sheet_exists(self):
         """Ensure the current month's sheet exists with proper headers."""
         try:
@@ -517,7 +709,7 @@ class ExpenseBot:
     def _add_expense(self, amount: float, description: str, category: str, user: str, details: str = ""):
         try:
             current_month = datetime.now().strftime('%Y-%m')
-            date = datetime.now().strftime('%Y/%m/%d')
+            date = datetime.now().strftime('%d/%m/%Y')
             
             values = [[date, amount, description, category, user, details]]
             print(f"Adding to sheet {current_month}: {values}")
@@ -840,7 +1032,271 @@ class ExpenseBot:
                     InlineKeyboardButton("◀️ Back", callback_data="summary_back")
                 ]])
             )
+        
+        elif query.data.startswith('invest_'):
+                    try:
+                        # Parse callback data
+                        parts = query.data.split('_')
+                        amount = float(parts[1])
+                        category = parts[2]
+                        description = '_'.join(parts[3:]) if len(parts) > 3 else ""
+                        
+                        # Get current year sheet
+                        current_year = datetime.now().year
+                        year_sheet = f"{current_year} Overview"
+                        
+                        # Ensure sheet exists
+                        self._ensure_investment_sheets_exist()
+                        
+                        # Add investment
+                        date = datetime.now().strftime('%Y/%m/%d')
+                        values = [[
+                            date,           # Date
+                            amount,         # Amount
+                            category,       # Category
+                            query.from_user.username or "Unknown",  # User
+                            description,    # Description
+                            "",            # Returns (empty initially)
+                            ""             # Return Date (empty initially)
+                        ]]
+                        
+                        self.sheets_service.spreadsheets().values().append(
+                            spreadsheetId=self.spreadsheet_id,
+                            range=f'{year_sheet}!A:G',
+                            valueInputOption='USER_ENTERED',
+                            insertDataOption='INSERT_ROWS',
+                            body={'values': values}
+                        ).execute()
+                        
+                        # Create success message
+                        msg = f"✅ Investment Added:\n"
+                        msg += f"Amount: ₹{amount:.2f}\n"
+                        msg += f"Category: {category}"
+                        if description:
+                            msg += f"\nDescription: {description}"
+                        
+                        await query.edit_message_text(msg)
+                        
+                    except Exception as e:
+                        print(f"Error adding investment: {e}")
+                        await query.edit_message_text("❌ Error adding investment.")
 
+        elif query.data.startswith('inv_compare_'):
+            try:
+                compare_type = query.data.split('_')[2]
+                current_year = datetime.now().year
+                message = "📊 Investment Comparison\n\n"
+                
+                if compare_type == 'month':
+                    try:
+                        # Current month comparison
+                        current_month = datetime.now().strftime('%m')  # Get current month
+                        result = self.sheets_service.spreadsheets().values().get(
+                            spreadsheetId=self.spreadsheet_id,
+                            range=f'{current_year} Overview!A:G'
+                        ).execute()
+                        
+                        values = result.get('values', [])
+                        if len(values) <= 1:
+                            message += "No investments found for current month"
+                        else:
+                            values = values[1:]  # Skip header
+                            # Filter current month investments
+                            current_month_investments = []
+                            for row in values:
+                                try:
+                                    if len(row) > 0:
+                                        date_parts = row[0].split('/')
+                                        if len(date_parts) >= 2 and date_parts[1] == current_month:
+                                            current_month_investments.append(row)
+                                except (IndexError, AttributeError):
+                                    continue
+
+                            if not current_month_investments:
+                                message += "No investments found for current month"
+                            else:
+                                # Calculate total
+                                total = sum(float(row[1]) for row in current_month_investments if len(row) > 1 and row[1])
+                                message += f"Current Month Total: ₹{total:.2f}\n"
+                                message += f"Number of Investments: {len(current_month_investments)}\n\n"
+                                
+                                # Category-wise breakdown
+                                category_totals = {}
+                                for row in current_month_investments:
+                                    if len(row) >= 3:  # Ensure category exists
+                                        category = row[2]
+                                        try:
+                                            amount = float(row[1]) if row[1] else 0
+                                            category_totals[category] = category_totals.get(category, 0) + amount
+                                        except ValueError:
+                                            continue
+                                
+                                if category_totals:
+                                    message += "Category Breakdown:\n"
+                                    for category, amount in sorted(category_totals.items(), key=lambda x: x[1], reverse=True):
+                                        percentage = (amount / total * 100) if total > 0 else 0
+                                        message += f"{category}: ₹{amount:.2f} ({percentage:.1f}%)\n"
+                                    
+                    except Exception as e:
+                        print(f"Error in monthly calculation: {e}")
+                        message += "Error processing monthly data"
+                        
+                elif compare_type == 'year':
+                    try:
+                        result = self.sheets_service.spreadsheets().values().get(
+                            spreadsheetId=self.spreadsheet_id,
+                            range=f'{current_year} Overview!A:G'
+                        ).execute()
+                        
+                        values = result.get('values', [])
+                        if len(values) <= 1:
+                            message += f"No investments found for {current_year}"
+                        else:
+                            values = values[1:]  # Skip header
+                            total_invested = 0
+                            total_returns = 0
+                            category_totals = {}
+                            
+                            for row in values:
+                                try:
+                                    if len(row) >= 2 and row[1]:
+                                        amount = float(row[1])
+                                        total_invested += amount
+                                        # Add to category total
+                                        if len(row) >= 3:
+                                            category = row[2]
+                                            category_totals[category] = category_totals.get(category, 0) + amount
+                                    if len(row) >= 6 and row[5]:
+                                        total_returns += float(row[5])
+                                except (ValueError, IndexError):
+                                    continue
+                            
+                            message += f"Year {current_year}:\n"
+                            message += f"Total Invested: ₹{total_invested:.2f}\n"
+                            message += f"Total Returns: ₹{total_returns:.2f}\n"
+                            if total_invested > 0:
+                                roi = (total_returns / total_invested) * 100
+                                message += f"ROI: {roi:.1f}%\n\n"
+                            
+                            if category_totals:
+                                message += "Category Breakdown:\n"
+                                for category, amount in sorted(category_totals.items(), key=lambda x: x[1], reverse=True):
+                                    percentage = (amount / total_invested * 100) if total_invested > 0 else 0
+                                    message += f"{category}: ₹{amount:.2f} ({percentage:.1f}%)\n"
+                    
+                    except Exception as e:
+                        print(f"Error processing year data: {e}")
+                        message += f"Error retrieving data for {current_year}"
+                
+                elif compare_type == 'years':
+                    try:
+                        # First get the investment summary
+                        result = self.sheets_service.spreadsheets().values().get(
+                            spreadsheetId=self.spreadsheet_id,
+                            range='Investment Summary!A:E'
+                        ).execute()
+                        
+                        # Also get all available sheets
+                        sheet_metadata = self.sheets_service.spreadsheets().get(
+                            spreadsheetId=self.spreadsheet_id
+                        ).execute()
+                        
+                        # Find all Overview sheets
+                        overview_sheets = [
+                            sheet['properties']['title'] 
+                            for sheet in sheet_metadata.get('sheets', [])
+                            if 'Overview' in sheet['properties']['title']
+                        ]
+                        
+                        overview_sheets.sort(reverse=True)  # Sort newest to oldest
+                        
+                        values = result.get('values', [])
+                        if len(values) <= 1:
+                            message += "No investment summary data available"
+                        else:
+                            values = values[1:]
+                            sorted_values = sorted(values, key=lambda x: x[0], reverse=True)
+                            
+                            for sheet_name in overview_sheets:
+                                try:
+                                    year = sheet_name.split()[0]  # Get year from "YYYY Overview"
+                                    
+                                    # Get data from Investment Summary
+                                    year_summary = next((row for row in sorted_values if row[0] == year), None)
+                                    
+                                    if year_summary:
+                                        total_invested = float(year_summary[1]) if year_summary[1] else 0
+                                        total_returns = float(year_summary[2]) if len(year_summary) > 2 and year_summary[2] else 0
+                                        roi = float(year_summary[3]) if len(year_summary) > 3 and year_summary[3] else 0
+                                        best_category = year_summary[4] if len(year_summary) > 4 else "N/A"
+                                    else:
+                                        # If no summary, calculate from Overview sheet
+                                        year_result = self.sheets_service.spreadsheets().values().get(
+                                            spreadsheetId=self.spreadsheet_id,
+                                            range=f'{sheet_name}!A:G'
+                                        ).execute()
+                                        
+                                        year_values = year_result.get('values', [])[1:]  # Skip header
+                                        total_invested = sum(float(row[1]) for row in year_values if len(row) > 1 and row[1])
+                                        total_returns = sum(float(row[5]) for row in year_values if len(row) > 5 and row[5])
+                                        roi = (total_returns / total_invested * 100) if total_invested > 0 else 0
+                                        best_category = "N/A"
+                                    
+                                    message += f"\n📅 Year {year}\n"
+                                    message += f"Total Invested: ₹{total_invested:.2f}\n"
+                                    message += f"Total Returns: ₹{total_returns:.2f}\n"
+                                    message += f"ROI: {roi:.1f}%\n"
+                                    message += f"Best Category: {best_category}\n"
+                                    
+                                    # Get category breakdown
+                                    try:
+                                        year_result = self.sheets_service.spreadsheets().values().get(
+                                            spreadsheetId=self.spreadsheet_id,
+                                            range=f'{sheet_name}!A:G'
+                                        ).execute()
+                                        
+                                        year_values = year_result.get('values', [])[1:]  # Skip header
+                                        category_totals = {}
+                                        for year_row in year_values:
+                                            if len(year_row) >= 3:
+                                                category = year_row[2]
+                                                amount = float(year_row[1]) if year_row[1] else 0
+                                                category_totals[category] = category_totals.get(category, 0) + amount
+                                        
+                                        if category_totals:
+                                            message += "\nCategory Breakdown:\n"
+                                            for category, amount in sorted(category_totals.items(), key=lambda x: x[1], reverse=True):
+                                                percentage = (amount / total_invested * 100) if total_invested > 0 else 0
+                                                message += f"{category}: ₹{amount:.2f} ({percentage:.1f}%)\n"
+                                    except Exception as e:
+                                        print(f"Error getting category breakdown for {sheet_name}: {e}")
+                                        message += "\nCategory breakdown not available"
+                                    
+                                    message += "──────────────"
+                                    
+                                except Exception as e:
+                                    print(f"Error processing sheet {sheet_name}: {e}")
+                                    continue
+                    
+                    except Exception as e:
+                        print(f"Error fetching investment summary: {e}")
+                        message += "Error retrieving investment summary data"
+                
+                await query.edit_message_text(
+                    message,
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("◀️ Back", callback_data="inv_compare_back")
+                    ]])
+                )
+                
+            except Exception as e:
+                print(f"Error in investment comparison: {e}")
+                await query.edit_message_text(
+                    "❌ Error generating comparison",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("◀️ Back", callback_data="inv_compare_back")
+                    ]])
+                )
 
 
 
@@ -904,7 +1360,6 @@ async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 
-
 async def main():
     try:
         # Load configuration
@@ -919,6 +1374,7 @@ async def main():
         app = Application.builder().token(token).build()
         
         # Add handlers
+        # Add command handlers first
         app.add_handler(CommandHandler("start", bot.start))
         app.add_handler(CommandHandler("delete", bot.delete_last_entry))
         app.add_handler(CommandHandler("edit", bot.edit_last_entry))
@@ -926,11 +1382,18 @@ async def main():
         app.add_handler(CommandHandler("view", bot.view_categories))
         app.add_handler(CommandHandler("compare", bot.compare_expenses))
         app.add_handler(CommandHandler("summary", bot.show_summary))
+        app.add_handler(CommandHandler("invest", bot.invest))
+        app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
+
+        # Then add message handler for all text messages
         app.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, bot.handle_expense
+            filters.TEXT & ~filters.COMMAND, 
+            bot.handle_message
         ))
+
+        # Finally add callback handler
         app.add_handler(CallbackQueryHandler(bot.button_handler))
-        
+
         print("Starting bot...")
         
         # Run with specific settings to avoid conflicts
