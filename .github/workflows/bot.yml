@@ -4,7 +4,8 @@ on:
   push:
     branches: [ main ]
   schedule:
-    - cron: '0 0 1 * *'  # Run monthly for maintenance
+    - cron: '0 */6 * * *'  # Run every 6 hours
+    - cron: '0 0 1 * *'    # Retain monthly maintenance run
 
 jobs:
   run-bot:
@@ -33,3 +34,8 @@ jobs:
         SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         GOOGLE_CREDENTIALS_PATH: credentials.json
       run: python src/bot.py
+
+    # Optional: Add a simple notification or logging step
+    - name: Log Completion
+      if: success()
+      run: echo "Expense Bot workflow completed successfully"
