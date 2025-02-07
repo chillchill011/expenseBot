@@ -54,10 +54,76 @@ class ExpenseBot:
             "• /categories - Add expense to category\n"
             "• /view - View categories with expenses\n"
             "• /invest - Add investment\n"
-            "• /inv_compare - View investment summary"
+            "• /inv_compare - View investment summary\n"
+            "• /loan - Add loan data\n"
+            "• /loan_compare - View loan summary\n"
         )
         await update.message.reply_text(welcome_message)
 
+    async def loan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle loan command"""
+        try:
+            if not context.args or len(context.args) < 1:
+                await update.message.reply_text(
+                    "❌ Format: /loan <amount> [description]\n"
+                    "Example: /loan 5000 emi payment"
+                )
+                return
+
+            amount = float(context.args[0])
+            description = ' '.join(context.args[1:]) if len(context.args) > 1 else ""
+            
+            # Get loan categories from Loan Master sheet
+            result = self.sheets_service.spreadsheets().values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range='Loan Master!A:D'
+            ).execute()
+            
+            categories = result.get('values', [])[1:]  # Skip header
+            
+            # Create category keyboard
+            keyboard = []
+            row = []
+            for idx, cat in enumerate(categories):
+                category = cat[0]
+                bank = cat[1]
+                callback_data = f"loan_{amount}_{category}"
+                if description:
+                    callback_data += f"_{description}"
+                button = InlineKeyboardButton(f"{category} ({bank})", callback_data=callback_data)
+                row.append(button)
+                
+                if len(row) == 2 or idx == len(categories) - 1:
+                    keyboard.append(row)
+                    row = []
+            
+            await update.message.reply_text(
+                "Select loan category:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+        except ValueError:
+            await update.message.reply_text("❌ Invalid amount format")
+        except Exception as e:
+            print(f"Error in loan command: {e}")
+            await update.message.reply_text("❌ Error processing loan repayment")
+
+    async def compare_loans(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Compare loan repayments"""
+        try:
+            keyboard = [
+                [InlineKeyboardButton("Current Month", callback_data="loan_compare_month")],
+                [InlineKeyboardButton("Current Year", callback_data="loan_compare_year")],
+                [InlineKeyboardButton("All Time Summary", callback_data="loan_compare_all")]
+            ]
+            
+            await update.message.reply_text(
+                "📊 Select loan comparison type:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            print(f"Error in loan comparison: {e}")
+            await update.message.reply_text("❌ Error showing comparison options")
 
 
     def _ensure_investment_sheets_exist(self):
@@ -934,7 +1000,172 @@ class ExpenseBot:
                 print(f"Error viewing category: {e}")
                 await query.edit_message_text("❌ Error retrieving category expenses.")
 
-
+        elif query.data.startswith('loan_'):
+            if query.data.startswith('loan_compare_'):
+                try:
+                    compare_type = query.data.split('_')[2]
+                    message = "📊 Loan Repayment Summary\n\n"
+                    
+                    if compare_type == 'month':
+                        # Current month summary
+                        current_month = datetime.now().strftime('%m')
+                        result = self.sheets_service.spreadsheets().values().get(
+                            spreadsheetId=self.spreadsheet_id,
+                            range='Loan Repayment!A:E'
+                        ).execute()
+                        
+                        values = result.get('values', [])[1:]  # Skip header
+                        current_month_payments = [
+                            row for row in values 
+                            if row[0].split('/')[1] == current_month
+                        ]
+                        
+                        if current_month_payments:
+                            total = sum(float(row[1]) for row in current_month_payments)
+                            message += f"Current Month Total: ₹{total:.2f}\n"
+                            message += f"Number of Payments: {len(current_month_payments)}\n\n"
+                            
+                            # Category breakdown
+                            category_totals = {}
+                            for row in current_month_payments:
+                                category = row[3]  # Loan category
+                                amount = float(row[1])
+                                category_totals[category] = category_totals.get(category, 0) + amount
+                            
+                            message += "Category Breakdown:\n"
+                            for category, amount in sorted(category_totals.items(), key=lambda x: x[1], reverse=True):
+                                percentage = (amount / total * 100)
+                                message += f"{category}: ₹{amount:.2f} ({percentage:.1f}%)\n"
+                        else:
+                            message += "No loan payments this month"
+                            
+                    elif compare_type == 'year':
+                        current_year = datetime.now().year
+                        result = self.sheets_service.spreadsheets().values().get(
+                            spreadsheetId=self.spreadsheet_id,
+                            range='Loan Repayment!A:E'
+                        ).execute()
+                        
+                        values = result.get('values', [])[1:]
+                        year_payments = [
+                            row for row in values 
+                            if row[0].split('/')[0] == str(current_year)
+                        ]
+                        
+                        if year_payments:
+                            total = sum(float(row[1]) for row in year_payments)
+                            message += f"Year {current_year} Total: ₹{total:.2f}\n"
+                            message += f"Number of Payments: {len(year_payments)}\n\n"
+                            
+                            # Category breakdown
+                            category_totals = {}
+                            for row in year_payments:
+                                category = row[3]
+                                amount = float(row[1])
+                                category_totals[category] = category_totals.get(category, 0) + amount
+                            
+                            message += "Category Breakdown:\n"
+                            for category, amount in sorted(category_totals.items(), key=lambda x: x[1], reverse=True):
+                                percentage = (amount / total * 100)
+                                message += f"{category}: ₹{amount:.2f} ({percentage:.1f}%)\n"
+                        else:
+                            message += "No loan payments this year"
+                    
+                    elif compare_type == 'all':
+                        result = self.sheets_service.spreadsheets().values().get(
+                            spreadsheetId=self.spreadsheet_id,
+                            range='Loan Repayment!A:E'
+                        ).execute()
+                        
+                        values = result.get('values', [])[1:]  # Skip header
+                        if values:
+                            # First, show overall total
+                            total_all_time = sum(float(row[1]) for row in values)
+                            message += f"📊 All Time Summary\n"
+                            message += f"Total Payments: ₹{total_all_time:.2f}\n"
+                            message += f"Number of Payments: {len(values)}\n"
+                            message += "──────────────\n\n"
+                            
+                            # Group by years
+                            year_data = {}
+                            for row in values:
+                                year = row[0].split('/')[0]  # Get year from date
+                                if year not in year_data:
+                                    year_data[year] = []
+                                year_data[year].append(row)
+                            
+                            # Process each year
+                            for year in sorted(year_data.keys(), reverse=True):
+                                year_payments = year_data[year]
+                                year_total = sum(float(row[1]) for row in year_payments)
+                                
+                                message += f"📅 Year {year}\n"
+                                message += f"Total: ₹{year_total:.2f}\n"
+                                message += f"Payments: {len(year_payments)}\n"
+                                
+                                # Category breakdown for this year
+                                category_totals = {}
+                                for row in year_payments:
+                                    category = row[3]  # Loan category
+                                    amount = float(row[1])
+                                    category_totals[category] = category_totals.get(category, 0) + amount
+                                
+                                message += "\nCategory Breakdown:\n"
+                                for category, amount in sorted(category_totals.items(), key=lambda x: x[1], reverse=True):
+                                    percentage = (amount / year_total * 100)
+                                    message += f"• {category}: ₹{amount:.2f} ({percentage:.1f}%)\n"
+                                
+                                message += "──────────────\n"
+                        else:
+                            message += "No loan payment records found"
+                    
+                    await query.edit_message_text(
+                        message,
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("◀️ Back", callback_data="loan_compare_back")
+                        ]])
+                    )
+                    
+                except Exception as e:
+                    print(f"Error in loan comparison: {e}")
+                    await query.edit_message_text("❌ Error generating comparison")
+                    
+            else:
+                try:
+                    # Handle loan payment entry
+                    parts = query.data.split('_')
+                    amount = float(parts[1])
+                    category = parts[2]
+                    description = '_'.join(parts[3:]) if len(parts) > 3 else ""
+                    
+                    date = datetime.now().strftime('%Y/%m/%d')
+                    values = [[
+                        date,           # Date
+                        amount,         # Amount
+                        query.from_user.username or "Unknown",  # User
+                        category,       # Loan category
+                        description,    # Description
+                    ]]
+                    
+                    self.sheets_service.spreadsheets().values().append(
+                        spreadsheetId=self.spreadsheet_id,
+                        range='Loan Repayment!A:E',
+                        valueInputOption='USER_ENTERED',
+                        insertDataOption='INSERT_ROWS',
+                        body={'values': values}
+                    ).execute()
+                    
+                    msg = f"✅ Loan Payment Added:\n"
+                    msg += f"Amount: ₹{amount:.2f}\n"
+                    msg += f"Category: {category}"
+                    if description:
+                        msg += f"\nDescription: {description}"
+                    
+                    await query.edit_message_text(msg)
+                    
+                except Exception as e:
+                    print(f"Error adding loan payment: {e}")
+                    await query.edit_message_text("❌ Error adding loan payment")
 
 
         elif query.data.startswith('compare_'):
@@ -1384,6 +1615,8 @@ async def main():
         app.add_handler(CommandHandler("summary", bot.show_summary))
         app.add_handler(CommandHandler("invest", bot.invest))
         app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
+        app.add_handler(CommandHandler("loan", bot.loan))
+        app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
 
         # Then add message handler for all text messages
         app.add_handler(MessageHandler(
