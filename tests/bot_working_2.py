@@ -135,8 +135,9 @@ class ExpenseBot:
                         category = cat[0]
                         risk = cat[1]
                         # Include original_user in callback data
-                        short_desc = description[:10] if description else ""
-                        callback_data = f"hi_{entry_date}_{amount}_{category}_{original_user}_{short_desc}"
+                        callback_data = f"hist_invest_{entry_date}_{amount}_{category}_{original_user}"
+                        if description:
+                            callback_data += f"_{description}"
                         button = InlineKeyboardButton(f"{category} ({risk})", callback_data=callback_data)
                         row.append(button)
                         
@@ -177,8 +178,9 @@ class ExpenseBot:
                         category = cat[0]
                         bank = cat[1]
                         # Include original_user in callback data
-                        short_desc = description[:10] if description else ""
-                        callback_data = f"hl_{entry_date}_{amount}_{category}_{original_user}_{short_desc}"
+                        callback_data = f"hist_loan_{entry_date}_{amount}_{category}_{original_user}"
+                        if description:
+                            callback_data += f"_{description}"
                         button = InlineKeyboardButton(f"{category} ({bank})", callback_data=callback_data)
                         row.append(button)
                         
@@ -224,13 +226,9 @@ class ExpenseBot:
                     
                     for idx, cat in enumerate(unique_categories):
                         if cat:  # Skip empty categories
-                            # Shorten description and details if needed
-                            short_desc = description[:10] if description else ""
-                            short_details = details[:10] if details else ""
-
-                            callback_data = f"hc_{entry_date}_{amount}_{cat}_{original_user}_{short_desc}"
-                            if short_details:
-                                callback_data += f"_{short_details}"
+                            callback_data = f"hist_cat_{entry_date}_{amount}_{cat}_{original_user}_{description}"
+                            if details:
+                                callback_data += f"_{details}"
                             button = InlineKeyboardButton(text=cat, callback_data=callback_data)
                             row.append(button)
                             
@@ -1087,16 +1085,16 @@ class ExpenseBot:
             await query.answer()
             
 
-            if query.data.startswith('hc_'):
+            if query.data.startswith('hist_cat_'):
                 try:
                     # Parse callback data
                     parts = query.data.split('_')
-                    entry_date = parts[1]      # Correct index
-                    amount = float(parts[2])   # Correct index
-                    category = parts[3]        # Correct index
-                    original_user = parts[4]   # Correct index
-                    description = parts[5] if len(parts) > 5 else ""  # Correct index
-                    details = parts[6] if len(parts) > 6 else ""      # Correct index
+                    entry_date = parts[2]
+                    amount = float(parts[3])
+                    category = parts[4]
+                    original_user = parts[5]
+                    description = parts[6]
+                    details = '_'.join(parts[7:]) if len(parts) > 7 else ""
 
                     # Get sheet name from date
                     month_year = entry_date.split('/')[1:]  # Get MM/YYYY
@@ -1139,15 +1137,15 @@ class ExpenseBot:
                     await query.edit_message_text("❌ Error adding historical expense")
 
 
-            elif query.data.startswith('hi_'):
+            elif query.data.startswith('hist_invest_'):
                 try:
                     # Parse callback data
                     parts = query.data.split('_')
-                    entry_date = parts[1]      # Changed from parts[2]
-                    amount = float(parts[2])   # Changed from parts[3]
-                    category = parts[3]        # Changed from parts[4]
-                    original_user = parts[4]   # Changed from parts[5]
-                    description = '_'.join(parts[5:]) if len(parts) > 5 else "" 
+                    entry_date = parts[2]
+                    amount = float(parts[3])
+                    category = parts[4]
+                    original_user = parts[5]  # Get original user
+                    description = '_'.join(parts[6:]) if len(parts) > 6 else ""
                     
                     # Get year from date
                     year = entry_date.split('/')[-1]
@@ -1186,15 +1184,15 @@ class ExpenseBot:
                     print(f"Error adding historical investment: {e}")
                     await query.edit_message_text("❌ Error adding historical investment")
 
-            elif query.data.startswith('hl_'):
+            elif query.data.startswith('hist_loan_'):
                 try:
                     # Parse callback data
                     parts = query.data.split('_')
-                    entry_date = parts[1]      # Changed from parts[2]
-                    amount = float(parts[2])   # Changed from parts[3]
-                    category = parts[3]        # Changed from parts[4]
-                    original_user = parts[4]   # Changed from parts[5]
-                    description = '_'.join(parts[5:]) if len(parts) > 5 else ""
+                    entry_date = parts[2]
+                    amount = float(parts[3])
+                    category = parts[4]
+                    original_user = parts[5]  # Get original user
+                    description = '_'.join(parts[6:]) if len(parts) > 6 else ""
                     
                     # Add loan with original user
                     values = [[
