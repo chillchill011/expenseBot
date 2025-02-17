@@ -72,7 +72,9 @@ class ExpenseBot:
         """Start the scheduler in a separate thread."""
         def run_scheduler():
             # Schedule sheet creation for first day of each month at 00:05
-            schedule.every().month.at("00:05").do(self._create_next_month_sheet)
+            schedule.every().day.at("22:00").do(
+                self._check_and_create_sheet
+            )
             
             while True:
                 schedule.run_pending()
@@ -80,6 +82,15 @@ class ExpenseBot:
 
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
         scheduler_thread.start()
+
+    def _check_and_create_sheet(self):
+        """Test version - remove True after testing"""
+        current_date = datetime.now()
+        if True or current_date.day == 1:  # Will run every time for testing
+            self._create_next_month_sheet()
+            print(f"Scheduler triggered on {current_date} - Sheet creation attempted")
+        else:
+            print(f"Scheduler check on {current_date} - Not first day of month")
 
     def _create_next_month_sheet(self):
         """Create sheet for next month."""
@@ -99,7 +110,7 @@ class ExpenseBot:
             # Use existing _ensure_monthly_sheet_exists method
             self._ensure_monthly_sheet_exists(sheet_name)
             print(f"Successfully created sheet for {sheet_name}")
-            
+                
         except Exception as e:
             print(f"Error creating next month's sheet: {e}")
 
