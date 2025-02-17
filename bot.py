@@ -1,11 +1,13 @@
 from dotenv import load_dotenv
 load_dotenv()
-# Core bot implementation with essential components
 import os
 import asyncio
 import nest_asyncio
 from datetime import datetime, timedelta
 import logging
+import threading
+import time
+import schedule
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -40,6 +42,9 @@ class ExpenseBot:
         
         # Initialize category cache
         self.categories = self._load_categories()
+
+        # Start the scheduler in a separate thread
+        self._start_scheduler()
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /start command."""
@@ -61,7 +66,42 @@ class ExpenseBot:
         )
         await update.message.reply_text(welcome_message)
 
-    
+    def _start_scheduler(self):
+        """Start the scheduler in a separate thread."""
+        def run_scheduler():
+            # Schedule sheet creation for first day of each month at 00:05
+            schedule.every().month.at("00:05").do(self._create_next_month_sheet)
+            
+            while True:
+                schedule.run_pending()
+                time.sleep(60)  # Check every minute
+
+        scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+        scheduler_thread.start()
+
+    def _create_next_month_sheet(self):
+        """Create sheet for next month."""
+        try:
+            # Get next month
+            current_date = datetime.now()
+            if current_date.month == 12:
+                next_month = 1
+                next_year = current_date.year + 1
+            else:
+                next_month = current_date.month + 1
+                next_year = current_date.year
+
+            sheet_name = f"{next_year}-{next_month:02d}"
+            print(f"Creating sheet for {sheet_name}")
+            
+            # Use existing _ensure_monthly_sheet_exists method
+            self._ensure_monthly_sheet_exists(sheet_name)
+            print(f"Successfully created sheet for {sheet_name}")
+            
+        except Exception as e:
+            print(f"Error creating next month's sheet: {e}")
+
+
     def _load_categories(self) -> dict:
         """Load categories from master sheet."""
         try:
@@ -135,8 +175,14 @@ class ExpenseBot:
                         category = cat[0]
                         risk = cat[1]
                         # Include original_user in callback data
-                        short_desc = description[:10] if description else ""
-                        callback_data = f"hi_{entry_date}_{amount}_{category}_{original_user}_{short_desc}"
+                        callback_data = self._create_safe_callback_data(
+                            prefix="hi",
+                            date=entry_date,
+                            amount=amount,
+                            category=category,
+                            user=original_user,
+                            description=description
+                        )
                         button = InlineKeyboardButton(f"{category} ({risk})", callback_data=callback_data)
                         row.append(button)
                         
@@ -177,8 +223,14 @@ class ExpenseBot:
                         category = cat[0]
                         bank = cat[1]
                         # Include original_user in callback data
-                        short_desc = description[:10] if description else ""
-                        callback_data = f"hl_{entry_date}_{amount}_{category}_{original_user}_{short_desc}"
+                        callback_data = self._create_safe_callback_data(
+                            prefix="hl",
+                            date=entry_date,
+                            amount=amount,
+                            category=category,
+                            user=original_user,
+                            description=description
+                        )
                         button = InlineKeyboardButton(f"{category} ({bank})", callback_data=callback_data)
                         row.append(button)
                         
@@ -213,35 +265,45 @@ class ExpenseBot:
                     description = rest_of_text.strip()
                     details = ""
 
-                # Check if category exists
+                # Check if category exists - add debug logs
+                print(f"Checking category for: {description}")  # Debug log
                 category = self._get_category(description.lower())
+                print(f"Found category: {category}")  # Debug log
                 
+                # For regular expenses
                 if not category:
-                    # Create category keyboard with original user in callback data
                     keyboard = []
                     row = []
                     unique_categories = sorted(set(self.categories.values()))
                     
                     for idx, cat in enumerate(unique_categories):
                         if cat:  # Skip empty categories
-                            # Shorten description and details if needed
-                            short_desc = description[:10] if description else ""
-                            short_details = details[:10] if details else ""
-
-                            callback_data = f"hc_{entry_date}_{amount}_{cat}_{original_user}_{short_desc}"
-                            if short_details:
-                                callback_data += f"_{short_details}"
-                            button = InlineKeyboardButton(text=cat, callback_data=callback_data)
-                            row.append(button)
+                            callback_data = self._create_safe_callback_data(
+                                prefix="hc",
+                                date=entry_date,
+                                amount=amount,
+                                category=cat,
+                                user=original_user,
+                                description=description,
+                                details=details
+                            )
                             
-                            if len(row) == 2 or idx == len(unique_categories) - 1:
-                                keyboard.append(row)
-                                row = []
+                            if callback_data:  # Only create button if callback data is valid
+                                button = InlineKeyboardButton(text=cat, callback_data=callback_data)
+                                row.append(button)
+                                
+                                if len(row) == 2 or idx == len(unique_categories) - 1:
+                                    if row:  # Only append non-empty rows
+                                        keyboard.append(row)
+                                    row = []
                     
-                    await update.message.reply_text(
-                        "📝 Select category:",
-                        reply_markup=InlineKeyboardMarkup(keyboard)
-                    )
+                    if keyboard:  # Only send keyboard if we have valid buttons
+                        await update.message.reply_text(
+                            "📝 Select category:",
+                            reply_markup=InlineKeyboardMarkup(keyboard)
+                        )
+                    else:
+                        await update.message.reply_text("❌ Error: Entry data too long. Please use shorter description/details.")
                     return
 
                 # If category exists, add expense directly with original user
@@ -280,6 +342,35 @@ class ExpenseBot:
             print(f"Error in add_historical_entry: {e}")
             await update.message.reply_text("❌ Error processing historical entry")
 
+
+    def _create_safe_callback_data(self, prefix, date, amount, category, user, description="", details=""):
+        """Create a safe callback data string within Telegram's limits."""
+        try:
+            # Base callback data with essential parts (keeping full username)
+            base_data = f"{prefix}_{date}_{amount}_{category}_{user}"
+            
+            # Calculate remaining space
+            remaining_bytes = 64 - len(base_data.encode('utf-8'))
+            
+            # Add description and details only if space allows
+            if description and remaining_bytes > 0:
+                safe_desc = description.replace(' ', '_')[:10]
+                base_data += f"_{safe_desc}"
+                remaining_bytes = 64 - len(base_data.encode('utf-8'))
+                
+                if details and remaining_bytes > 0:
+                    safe_details = details.replace(' ', '_')[:10]
+                    base_data += f"_{safe_details}"
+            
+            # Final length check
+            if len(base_data.encode('utf-8')) <= 64:
+                return base_data
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"Error creating callback data: {e}")
+            return None
 
     async def loan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle loan command"""
@@ -1033,6 +1124,28 @@ class ExpenseBot:
 
     def _get_category(self, description: str) -> str:
         """Get category for expense description."""
+        description = description.lower().strip()  # Added strip()
+        print(f"Checking category for description: {description}")  # Keep debug log
+        
+        # Check for exact match first
+        if description in self.categories:
+            print(f"Found exact match: {self.categories[description]}")
+            return self.categories[description]
+        
+        # Check if any part of description matches a category
+        for key in self.categories.keys():
+            clean_key = key.strip().lower()  # Added strip() and lower()
+            print(f"Checking against key: {clean_key}")  # Modified to show cleaned key
+            if clean_key in description:
+                print(f"Found partial match: {self.categories[key]}")
+                return self.categories[key]
+        
+        print("No category match found")
+        return None
+
+
+#    def _get_category(self, description: str) -> str:
+        """Get category for expense description."""
         description = description.lower()
         
         # Check for exact match first
@@ -1044,7 +1157,7 @@ class ExpenseBot:
             if key in description:
                 return self.categories[key]
         
-        return None
+#        return None
 
     async def _add_expense(self, amount: float, description: str, category: str, user: str, details: str = ""):
         try:
@@ -1224,9 +1337,6 @@ class ExpenseBot:
                     print(f"Error adding historical loan payment: {e}")
                     await query.edit_message_text("❌ Error adding historical loan payment")
         
-                except Exception as e:
-                    print(f"Error in button handler: {e}")
-                    await query.edit_message_text("An error occurred while processing your selection.")
 
             elif query.data.startswith('cat_'):
                 logger.info("Processing category selection")
