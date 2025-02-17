@@ -10,5 +10,5 @@ services:
         sync: false
       - key: SPREADSHEET_ID
         sync: false
-      - key: GOOGLE_CREDENTIALS_PATH
+      - key: GOOGLE_CREDENTIALS_BASE64
         sync: false
