@@ -46,7 +46,8 @@ class ExpenseBot:
         welcome_message = (
             "Welcome to the Expense Tracker Bot!\n\n"
             "Commands:\n"
-            "• Simply type amount and description (e.g., '50 milk')\n"
+            "• Simply type amount and description (e.g., '50 milk', '50 milk, details')\n"
+            "• /add - Add historic entry\n"
             "• /edit - Modify last entry\n"
             "• /delete - Remove last entry\n"
             "• /summary - View monthly summary\n"
@@ -59,6 +60,226 @@ class ExpenseBot:
             "• /loan_compare - View loan summary\n"
         )
         await update.message.reply_text(welcome_message)
+
+    
+    def _load_categories(self) -> dict:
+        """Load categories from master sheet."""
+        try:
+            print(f"Attempting to access sheet with ID: {self.spreadsheet_id}")
+            result = self.sheets_service.spreadsheets().values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range='Master!A2:B'
+            ).execute()
+            print("Successfully accessed sheet")
+            print(f"Retrieved data: {result}")
+            
+            categories = {}
+            for row in result.get('values', []):
+                if len(row) >= 2:
+                    expense, category = row
+                    categories[expense.lower()] = category
+            
+            print(f"Processed categories: {categories}")
+            return categories
+            
+        except Exception as e:
+            print(f"Error accessing sheet: {e}")
+            print(f"Using spreadsheet ID: {self.spreadsheet_id}")
+            print(f"Service account email: {self.credentials.service_account_email}")
+            raise
+
+    async def add_historical_entry(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Handle /add command to process a replied message as a historical entry.
+        Important: Uses the original message sender's username, not the command issuer's.
+        """
+        try:
+            # Check if the command is replying to a message
+            if not update.message.reply_to_message:
+                await update.message.reply_text(
+                    "❌ Please use this command by replying to an expense message.\n"
+                    "Example: Reply to '50 milk' with /add"
+                )
+                return
+
+            # Get the original message and its date
+            original_msg = update.message.reply_to_message
+            entry_date = original_msg.date.strftime('%d/%m/%Y')
+            # Get username from original message sender
+            original_user = original_msg.from_user.username or "Unknown"
+            text = original_msg.text.strip()
+
+            # Check if it's an investment or loan command
+            if text.lower().startswith('/invest'):
+                # Handle investment entry
+                parts = text.split(maxsplit=2)
+                if len(parts) < 2:
+                    await update.message.reply_text("❌ Invalid investment format")
+                    return
+                    
+                try:
+                    amount = float(parts[1])
+                    description = parts[2] if len(parts) > 2 else ""
+                    
+                    # Create investment keyboard with original user in callback data
+                    result = self.sheets_service.spreadsheets().values().get(
+                        spreadsheetId=self.spreadsheet_id,
+                        range='Investment Master!A:C'
+                    ).execute()
+                    
+                    categories = result.get('values', [])[1:]  # Skip header
+                    keyboard = []
+                    row = []
+                    
+                    for idx, cat in enumerate(categories):
+                        category = cat[0]
+                        risk = cat[1]
+                        # Include original_user in callback data
+                        short_desc = description[:10] if description else ""
+                        callback_data = f"hi_{entry_date}_{amount}_{category}_{original_user}_{short_desc}"
+                        button = InlineKeyboardButton(f"{category} ({risk})", callback_data=callback_data)
+                        row.append(button)
+                        
+                        if len(row) == 2 or idx == len(categories) - 1:
+                            keyboard.append(row)
+                            row = []
+                    
+                    await update.message.reply_text(
+                        "Select investment category:",
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                    
+                except ValueError:
+                    await update.message.reply_text("❌ Invalid amount format")
+                    
+            elif text.lower().startswith('/loan'):
+                # Handle loan entry
+                parts = text.split(maxsplit=2)
+                if len(parts) < 2:
+                    await update.message.reply_text("❌ Invalid loan format")
+                    return
+                    
+                try:
+                    amount = float(parts[1])
+                    description = parts[2] if len(parts) > 2 else ""
+                    
+                    # Create loan keyboard with original user in callback data
+                    result = self.sheets_service.spreadsheets().values().get(
+                        spreadsheetId=self.spreadsheet_id,
+                        range='Loan Master!A:D'
+                    ).execute()
+                    
+                    categories = result.get('values', [])[1:]  # Skip header
+                    keyboard = []
+                    row = []
+                    
+                    for idx, cat in enumerate(categories):
+                        category = cat[0]
+                        bank = cat[1]
+                        # Include original_user in callback data
+                        short_desc = description[:10] if description else ""
+                        callback_data = f"hl_{entry_date}_{amount}_{category}_{original_user}_{short_desc}"
+                        button = InlineKeyboardButton(f"{category} ({bank})", callback_data=callback_data)
+                        row.append(button)
+                        
+                        if len(row) == 2 or idx == len(categories) - 1:
+                            keyboard.append(row)
+                            row = []
+                    
+                    await update.message.reply_text(
+                        "Select loan category:",
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                    
+                except ValueError:
+                    await update.message.reply_text("❌ Invalid amount format")
+                    
+            else:
+                # Handle regular expense
+                parts = text.split(maxsplit=1)
+                if len(parts) < 2:
+                    await update.message.reply_text("❌ Invalid format. Please use: amount description, details")
+                    return
+
+                amount = float(parts[0])
+                rest_of_text = parts[1]
+
+                # Split description and details
+                if ',' in rest_of_text:
+                    description_part, details = rest_of_text.split(',', 1)
+                    description = description_part.strip()
+                    details = details.strip()
+                else:
+                    description = rest_of_text.strip()
+                    details = ""
+
+                # Check if category exists
+                category = self._get_category(description.lower())
+                
+                if not category:
+                    # Create category keyboard with original user in callback data
+                    keyboard = []
+                    row = []
+                    unique_categories = sorted(set(self.categories.values()))
+                    
+                    for idx, cat in enumerate(unique_categories):
+                        if cat:  # Skip empty categories
+                            # Shorten description and details if needed
+                            short_desc = description[:10] if description else ""
+                            short_details = details[:10] if details else ""
+
+                            callback_data = f"hc_{entry_date}_{amount}_{cat}_{original_user}_{short_desc}"
+                            if short_details:
+                                callback_data += f"_{short_details}"
+                            button = InlineKeyboardButton(text=cat, callback_data=callback_data)
+                            row.append(button)
+                            
+                            if len(row) == 2 or idx == len(unique_categories) - 1:
+                                keyboard.append(row)
+                                row = []
+                    
+                    await update.message.reply_text(
+                        "📝 Select category:",
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                    return
+
+                # If category exists, add expense directly with original user
+                month_year = entry_date.split('/')[1:]
+                sheet_name = f"{month_year[1]}-{month_year[0]}"
+                
+                self._ensure_monthly_sheet_exists(sheet_name)
+                
+                values = [[
+                    entry_date,
+                    amount,
+                    description,
+                    category,
+                    original_user,  # Using original message sender's username
+                    details
+                ]]
+                
+                self.sheets_service.spreadsheets().values().append(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=f'{sheet_name}!A:F',
+                    valueInputOption='USER_ENTERED',
+                    insertDataOption='INSERT_ROWS',
+                    body={'values': values}
+                ).execute()
+
+                msg = f"✅ Added historical entry:\nDate: {entry_date}\nAmount: ₹{amount:.2f}\nDescription: {description}\n"
+                msg += f"Category: {category}\nUser: {original_user}"
+                if details:
+                    msg += f"\nDetails: {details}"
+                
+                await update.message.reply_text(msg)
+
+        except ValueError:
+            await update.message.reply_text("❌ Invalid amount format")
+        except Exception as e:
+            print(f"Error in add_historical_entry: {e}")
+            await update.message.reply_text("❌ Error processing historical entry")
+
 
     async def loan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle loan command"""
@@ -465,14 +686,13 @@ class ExpenseBot:
 
 
     async def edit_last_entry(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Edit the last expense entry"""
         try:
             current_month = datetime.now().strftime('%Y-%m')
             
             # Get last entry
             result = self.sheets_service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range=f'{current_month}!A:E'
+                range=f'{current_month}!A:F'  # Include details column
             ).execute()
             
             values = result.get('values', [])
@@ -487,25 +707,34 @@ class ExpenseBot:
                 args = context.args  # Get arguments after /edit
                 if not args or len(args) < 2:
                     await update.message.reply_text(
-                        "Please use format: /edit <amount> <description>\n"
-                        "Example: /edit 75 milk"
+                        "Please use format: /edit <amount> description, details\n"
+                        "Example: /edit 75 milk, 2 packets"
                     )
                     return
                     
                 new_amount = float(args[0])
-                new_description = ' '.join(args[1:])
+                rest_text = ' '.join(args[1:])
+
+                # Split description and details
+                if ',' in rest_text:
+                    description_part, new_details = rest_text.split(',', 1)
+                    new_description = description_part.strip()
+                    new_details = new_details.strip()
+                else:
+                    new_description = rest_text.strip()
+                    new_details = last_entry[5] if len(last_entry) > 5 else ""  # Keep old details if not provided
                 
                 # Get category for new description
                 new_category = self._get_category(new_description.lower())
                 if not new_category:
                     new_category = last_entry[3]  # Keep old category if not found
-                    
+                
                 # Create confirmation keyboard
                 keyboard = [
                     [
                         InlineKeyboardButton(
                             "Yes", 
-                            callback_data=f"edit_yes_{len(values)-1}_{new_amount}_{new_description}_{new_category}"
+                            callback_data=f"edit_yes_{len(values)-1}_{new_amount}_{new_description}_{new_category}_{new_details}"
                         ),
                         InlineKeyboardButton("No", callback_data="edit_no")
                     ]
@@ -516,11 +745,13 @@ class ExpenseBot:
                     f"From:\n"
                     f"Amount: ₹{float(last_entry[1]):.2f}\n"
                     f"Description: {last_entry[2]}\n"
-                    f"Category: {last_entry[3]}\n\n"
+                    f"Category: {last_entry[3]}\n"
+                    f"Details: {last_entry[5] if len(last_entry) > 5 else ''}\n\n"
                     f"To:\n"
                     f"Amount: ₹{new_amount:.2f}\n"
                     f"Description: {new_description}\n"
-                    f"Category: {new_category}\n\n"
+                    f"Category: {new_category}\n"
+                    f"Details: {new_details}\n\n"
                     f"Do you want to proceed?",
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
@@ -528,8 +759,8 @@ class ExpenseBot:
             except ValueError:
                 await update.message.reply_text(
                     "❌ Invalid amount. Please use format:\n"
-                    "/edit <amount> <description>\n"
-                    "Example: /edit 75 milk"
+                    "/edit <amount> description, details\n"
+                    "Example: /edit 75 milk, 2 packets"
                 )
                 
         except Exception as e:
@@ -638,31 +869,39 @@ class ExpenseBot:
             raise
 
 
-    def _ensure_monthly_sheet_exists(self):
-        """Ensure the current month's sheet exists with proper headers."""
+    def _ensure_monthly_sheet_exists(self, sheet_name: str = None):
+        """Ensure the monthly sheet exists with proper headers.
+        
+        Args:
+            sheet_name (str, optional): Specific month sheet to create (format: YYYY-MM).
+                                    If None, creates sheet for current month.
+        """
         try:
-            current_month = datetime.now().strftime('%Y-%m')
-            print(f"Checking for sheet: {current_month}")
+            # If no sheet_name provided, use current month
+            if sheet_name is None:
+                sheet_name = datetime.now().strftime('%Y-%m')
+                
+            print(f"Checking for sheet: {sheet_name}")
 
             # Get all existing sheets
             sheet_metadata = self.sheets_service.spreadsheets().get(
                 spreadsheetId=self.spreadsheet_id
             ).execute()
             
-            # Check if current month sheet exists
+            # Check if sheet exists
             existing_sheets = sheet_metadata.get('sheets', [])
             sheet_exists = any(
-                sheet['properties']['title'] == current_month 
+                sheet['properties']['title'] == sheet_name 
                 for sheet in existing_sheets
             )
 
             if not sheet_exists:
-                print(f"Creating new sheet for {current_month}")
+                print(f"Creating new sheet for {sheet_name}")
                 # Create new sheet
                 requests = [{
                     'addSheet': {
                         'properties': {
-                            'title': current_month
+                            'title': sheet_name
                         }
                     }
                 }]
@@ -676,20 +915,22 @@ class ExpenseBot:
                 headers = [['Date', 'Amount', 'Description', 'Category', 'User', 'Details']]
                 self.sheets_service.spreadsheets().values().update(
                     spreadsheetId=self.spreadsheet_id,
-                    range=f'{current_month}!A1:E1',
+                    range=f'{sheet_name}!A1:F1',
                     valueInputOption='USER_ENTERED',
                     body={'values': headers}
                 ).execute()
                 
-                print(f"Created new sheet for {current_month} with headers")
+                print(f"Created new sheet for {sheet_name} with headers")
                 
             return True
             
         except Exception as e:
-            print(f"Error ensuring monthly sheet exists: {e}")
+            print(f"Error ensuring sheet exists for {sheet_name}: {e}")
             raise
 
+
     async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle expense messages."""
         try:
             text = update.message.text
             
@@ -716,10 +957,33 @@ class ExpenseBot:
             category = self._get_category(description.lower())
             
             if not category:
-                keyboard = self._create_category_keyboard(description, amount)
-                await update.message.reply_text("📝 Select category:", reply_markup=InlineKeyboardMarkup(keyboard))
+                # Create category selection keyboard directly
+                keyboard = []
+                row = []
+                unique_categories = sorted(set(self.categories.values()))
+                
+                for idx, cat in enumerate(unique_categories):
+                    if cat:  # Skip empty categories
+                        callback_data = f"cat_{description}_{amount}_{cat}"
+                        if details:
+                            callback_data += f"_{details}"
+                        button = InlineKeyboardButton(
+                            text=cat,
+                            callback_data=callback_data
+                        )
+                        row.append(button)
+                        
+                        if len(row) == 2 or idx == len(unique_categories) - 1:
+                            keyboard.append(row)
+                            row = []
+                
+                await update.message.reply_text(
+                    "📝 Select category:",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
                 return
             
+            # If category exists, add expense directly
             await self._add_expense(
                 amount=amount, 
                 description=description, 
@@ -788,6 +1052,7 @@ class ExpenseBot:
             current_month = datetime.now().strftime('%Y-%m')
             date = datetime.now().strftime('%d/%m/%Y')
             
+            # Add to monthly sheet
             values = [[date, amount, description, category, user, details]]
             print(f"Adding to sheet {current_month}: {values}")
             
@@ -798,7 +1063,12 @@ class ExpenseBot:
                 insertDataOption='INSERT_ROWS',
                 body={'values': values}
             ).execute()
-            
+
+            # Add to Master sheet if description doesn't exist
+            description_lower = description.lower()
+            if description_lower not in self.categories:
+                self._add_category_mapping(description_lower, category)
+                
             return True
                 
         except Exception as e:
@@ -809,48 +1079,6 @@ class ExpenseBot:
             raise
 
 
-    def _create_category_keyboard(self, description: str, amount: float) -> list:
-        """Create inline keyboard for category selection."""
-        logger = logging.getLogger(__name__)
-        
-        try:
-            # Get unique categories
-            unique_categories = sorted(set(self.categories.values()))
-            keyboard = []
-            row = []
-            
-            for idx, category in enumerate(unique_categories):
-                if not category:  # Skip empty categories
-                    continue
-                    
-                # Create callback data
-                callback_data = f"cat_{description}_{amount}_{category}"
-                
-                # Verify callback data length
-                if len(callback_data.encode('utf-8')) > 64:
-                    logger.warning(f"Callback data too long: {callback_data}")
-                    continue
-                
-                # Create button
-                button = InlineKeyboardButton(
-                    text=category,
-                    callback_data=callback_data
-                )
-                
-                row.append(button)
-                
-                # Create new row after every 2 buttons or at the end
-                if len(row) == 2 or idx == len(unique_categories) - 1:
-                    keyboard.append(row)
-                    row = []
-            
-            logger.info(f"Created keyboard with {len(keyboard)} rows")
-            return keyboard
-            
-        except Exception as e:
-            logger.error(f"Error creating category keyboard: {e}", exc_info=True)
-            return []  # Return empty keyboard in case of error
-
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger = logging.getLogger(__name__)
         try:
@@ -858,7 +1086,149 @@ class ExpenseBot:
             query = update.callback_query
             await query.answer()
             
-            if query.data.startswith('cat_'):
+
+            if query.data.startswith('hc_'):
+                try:
+                    # Parse callback data
+                    parts = query.data.split('_')
+                    entry_date = parts[1]      # Correct index
+                    amount = float(parts[2])   # Correct index
+                    category = parts[3]        # Correct index
+                    original_user = parts[4]   # Correct index
+                    description = parts[5] if len(parts) > 5 else ""  # Correct index
+                    details = parts[6] if len(parts) > 6 else ""      # Correct index
+
+                    # Get sheet name from date
+                    month_year = entry_date.split('/')[1:]  # Get MM/YYYY
+                    sheet_name = f"{month_year[1]}-{month_year[0]}"
+
+                    # Ensure sheet exists
+                    self._ensure_monthly_sheet_exists(sheet_name)
+
+                    # Add expense with original user
+                    values = [[
+                        entry_date,
+                        amount,
+                        description,
+                        category,
+                        original_user,
+                        details
+                    ]]
+
+                    self.sheets_service.spreadsheets().values().append(
+                        spreadsheetId=self.spreadsheet_id,
+                        range=f'{sheet_name}!A:F',
+                        valueInputOption='USER_ENTERED',
+                        insertDataOption='INSERT_ROWS',
+                        body={'values': values}
+                    ).execute()
+
+                    # Add to Master sheet if needed
+                    if description.lower() not in self.categories:
+                        self._add_category_mapping(description.lower(), category)
+
+                    msg = f"✅ Added historical entry:\nDate: {entry_date}\nAmount: ₹{amount:.2f}\nDescription: {description}"
+                    msg += f"\nCategory: {category}"
+                    if details:
+                        msg += f"\nDetails: {details}"
+
+                    await query.edit_message_text(msg)
+
+                except Exception as e:
+                    print(f"Error adding historical expense: {e}")
+                    await query.edit_message_text("❌ Error adding historical expense")
+
+
+            elif query.data.startswith('hi_'):
+                try:
+                    # Parse callback data
+                    parts = query.data.split('_')
+                    entry_date = parts[1]      # Changed from parts[2]
+                    amount = float(parts[2])   # Changed from parts[3]
+                    category = parts[3]        # Changed from parts[4]
+                    original_user = parts[4]   # Changed from parts[5]
+                    description = '_'.join(parts[5:]) if len(parts) > 5 else "" 
+                    
+                    # Get year from date
+                    year = entry_date.split('/')[-1]
+                    year_sheet = f"{year} Overview"
+                    
+                    # Ensure investment sheet exists
+                    self._ensure_investment_sheets_exist()
+                    
+                    # Add investment with original user
+                    values = [[
+                        entry_date,
+                        amount,
+                        category,
+                        original_user,  # Use original user
+                        description,
+                        "",
+                        ""
+                    ]]
+                    
+                    self.sheets_service.spreadsheets().values().append(
+                        spreadsheetId=self.spreadsheet_id,
+                        range=f'{year_sheet}!A:G',
+                        valueInputOption='USER_ENTERED',
+                        insertDataOption='INSERT_ROWS',
+                        body={'values': values}
+                    ).execute()
+                    
+                    msg = f"✅ Added historical investment:\nDate: {entry_date}\nAmount: ₹{amount:.2f}"
+                    msg += f"\nCategory: {category}"
+                    if description:
+                        msg += f"\nDescription: {description}"
+                    
+                    await query.edit_message_text(msg)
+                    
+                except Exception as e:
+                    print(f"Error adding historical investment: {e}")
+                    await query.edit_message_text("❌ Error adding historical investment")
+
+            elif query.data.startswith('hl_'):
+                try:
+                    # Parse callback data
+                    parts = query.data.split('_')
+                    entry_date = parts[1]      # Changed from parts[2]
+                    amount = float(parts[2])   # Changed from parts[3]
+                    category = parts[3]        # Changed from parts[4]
+                    original_user = parts[4]   # Changed from parts[5]
+                    description = '_'.join(parts[5:]) if len(parts) > 5 else ""
+                    
+                    # Add loan with original user
+                    values = [[
+                        entry_date,
+                        amount,
+                        original_user,  # Use original user
+                        category,
+                        description
+                    ]]
+                    
+                    self.sheets_service.spreadsheets().values().append(
+                        spreadsheetId=self.spreadsheet_id,
+                        range='Loan Repayment!A:E',
+                        valueInputOption='USER_ENTERED',
+                        insertDataOption='INSERT_ROWS',
+                        body={'values': values}
+                    ).execute()
+                    
+                    msg = f"✅ Added historical loan payment:\nDate: {entry_date}\nAmount: ₹{amount:.2f}"
+                    msg += f"\nCategory: {category}"
+                    if description:
+                        msg += f"\nDescription: {description}"
+                    
+                    await query.edit_message_text(msg)
+                    
+                except Exception as e:
+                    print(f"Error adding historical loan payment: {e}")
+                    await query.edit_message_text("❌ Error adding historical loan payment")
+        
+                except Exception as e:
+                    print(f"Error in button handler: {e}")
+                    await query.edit_message_text("An error occurred while processing your selection.")
+
+            elif query.data.startswith('cat_'):
                 logger.info("Processing category selection")
                 
                 # Split the callback data
@@ -872,30 +1242,32 @@ class ExpenseBot:
                 description = parts[1]
                 amount = float(parts[2])
                 category = parts[3]
+                details = '_'.join(parts[4:]) if len(parts) > 4 else ""  # Join any remaining parts as details
                 
-                logger.info(f"Adding expense: {amount} {description} {category}")
+                logger.info(f"Adding expense: {amount} {description} {category} with details: {details}")
                 
-                # Add the expense
-                await self._add_expense(
-                    amount=amount,
-                    description=description,
-                    category=category,
-                    user=query.from_user.username or "Unknown"
-                )
-                
-                # Add to master sheet if it's a new category
-                if description.lower() not in self.categories:
-                    logger.info("Adding new category mapping")
-                    self._add_category_mapping(description, category)
-                
-                # Update the message
-                await query.edit_message_text(
-                    f"✅ Added expense:\n"
-                    f"Amount: ₹{amount:.2f}\n"
-                    f"Description: {description}\n"
-                    f"Category: {category}"
-                )
-                logger.info("Successfully processed category selection")
+                try:
+                    # Add the expense
+                    await self._add_expense(
+                        amount=amount,
+                        description=description,
+                        category=category,
+                        user=query.from_user.username or "Unknown",
+                        details=details
+                    )
+                    
+                    # Create confirmation message
+                    msg = f"✅ Added:\nAmount: ₹{amount:.2f}\nDescription: {description}"
+                    msg += f"\nCategory: {category}"
+                    if details:
+                        msg += f"\nDetails: {details}"
+                    
+                    # Update the original message with confirmation
+                    await query.edit_message_text(msg)
+                    
+                except Exception as e:
+                    print(f"Error in button handler: {e}")
+                    await query.edit_message_text("❌ Error adding expense")
                 
             elif query.data.startswith('delete_'):
                 action = query.data.split('_')[1]
@@ -937,17 +1309,30 @@ class ExpenseBot:
                         new_amount = parts[3]
                         new_description = parts[4]
                         new_category = parts[5]
+                        new_details = parts[6] if len(parts) > 6 else ""
                         current_month = datetime.now().strftime('%Y-%m')
                         
-                        # Update the values
+                        # Get current values to preserve user
+                        result = self.sheets_service.spreadsheets().values().get(
+                            spreadsheetId=self.spreadsheet_id,
+                            range=f'{current_month}!A{int(row)+1}:F{int(row)+1}'
+                        ).execute()
+                        current_values = result.get('values', [[]])[0]
+                        current_user = current_values[4] if len(current_values) > 4 else "Unknown"
+                        
+                        # Update values keeping the original user
                         self.sheets_service.spreadsheets().values().update(
                             spreadsheetId=self.spreadsheet_id,
-                            range=f'{current_month}!B{int(row)+1}:D{int(row)+1}',
+                            range=f'{current_month}!B{int(row)+1}:F{int(row)+1}',
                             valueInputOption='USER_ENTERED',
                             body={
-                                'values': [[float(new_amount), new_description, new_category]]
+                                'values': [[float(new_amount), new_description, new_category, current_user, new_details]]
                             }
                         ).execute()
+
+                        # Update Master sheet if needed
+                        if new_description.lower() not in self.categories:
+                            self._add_category_mapping(new_description.lower(), new_category)
                         
                         await query.edit_message_text("✅ Entry updated successfully!")
                         
@@ -1060,19 +1445,37 @@ class ExpenseBot:
                         compare_type = query.data.split('_')[2]
                         message = "📊 Loan Repayment Summary\n\n"
                         
+                        # Get all loan repayment data
+                        result = self.sheets_service.spreadsheets().values().get(
+                            spreadsheetId=self.spreadsheet_id,
+                            range='Loan Repayment!A:E'
+                        ).execute()
+                        
+                        values = result.get('values', [])[1:]  # Skip header
+                        
                         if compare_type == 'month':
-                            # Current month summary
+                            # Get current month and year
                             current_month = datetime.now().strftime('%m')
-                            result = self.sheets_service.spreadsheets().values().get(
-                                spreadsheetId=self.spreadsheet_id,
-                                range='Loan Repayment!A:E'
-                            ).execute()
+                            current_year = datetime.now().strftime('%Y')
+                            print(f"Current month: {current_month}, Current year: {current_year}")  # Debug log
                             
-                            values = result.get('values', [])[1:]  # Skip header
-                            current_month_payments = [
-                                row for row in values 
-                                if row[0].split('/')[1] == current_month
-                            ]
+                            # Debug: Print first few dates to check format
+                            print("Checking first few dates in sheet:")
+                            for row in values[:5]:
+                                print(f"Date: {row[0]}, Month part: {row[0].split('/')[1]}, Year part: {row[0].split('/')[2]}")
+                            
+                            current_month_payments = []
+                            for row in values:
+                                try:
+                                    date_parts = row[0].split('/')
+                                    month = date_parts[1].zfill(2)
+                                    year = date_parts[2]
+                                    if month == current_month and year == current_year:
+                                        current_month_payments.append(row)
+                                except Exception as e:
+                                    print(f"Error processing row {row}: {e}")
+                            
+                            print(f"Found {len(current_month_payments)} payments for current month {current_month}/{current_year}")
                             
                             if current_month_payments:
                                 total = sum(float(row[1]) for row in current_month_payments)
@@ -1094,16 +1497,11 @@ class ExpenseBot:
                                 message += "No loan payments this month"
                                 
                         elif compare_type == 'year':
-                            current_year = datetime.now().year
-                            result = self.sheets_service.spreadsheets().values().get(
-                                spreadsheetId=self.spreadsheet_id,
-                                range='Loan Repayment!A:E'
-                            ).execute()
-                            
-                            values = result.get('values', [])[1:]
+                            # Rest of the year comparison code remains the same
+                            current_year = datetime.now().strftime('%Y')
                             year_payments = [
                                 row for row in values 
-                                if row[0].split('/')[0] == str(current_year)
+                                if row[0].split('/')[2] == current_year
                             ]
                             
                             if year_payments:
@@ -1126,14 +1524,8 @@ class ExpenseBot:
                                 message += "No loan payments this year"
                         
                         elif compare_type == 'all':
-                            result = self.sheets_service.spreadsheets().values().get(
-                                spreadsheetId=self.spreadsheet_id,
-                                range='Loan Repayment!A:E'
-                            ).execute()
-                            
-                            values = result.get('values', [])[1:]  # Skip header
+                            # Rest of the all-time comparison code remains the same
                             if values:
-                                # First, show overall total
                                 total_all_time = sum(float(row[1]) for row in values)
                                 message += f"📊 All Time Summary\n"
                                 message += f"Total Payments: ₹{total_all_time:.2f}\n"
@@ -1143,7 +1535,7 @@ class ExpenseBot:
                                 # Group by years
                                 year_data = {}
                                 for row in values:
-                                    year = row[0].split('/')[0]  # Get year from date
+                                    year = row[0].split('/')[2]
                                     if year not in year_data:
                                         year_data[year] = []
                                     year_data[year].append(row)
@@ -1610,30 +2002,60 @@ async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         text = update.message.text
         
-        # Extract amount
-        parts = text.split()
+        # First get the amount (first word)
+        parts = text.split(maxsplit=1)  # Split only first space to keep rest intact
+        if len(parts) < 2:
+            await update.message.reply_text("❌ Invalid format. Please use: amount description, details")
+            return
+            
         amount = float(parts[0])
+        rest_of_text = parts[1]
         
-        # Description is the first word after amount
-        description = parts[1]
+        # Split the rest by comma to separate description and details
+        if ',' in rest_of_text:
+            description_part, details = rest_of_text.split(',', 1)  # Split on first comma
+            description = description_part.strip()
+            details = details.strip()
+        else:
+            description = rest_of_text.strip()
+            details = ""
         
-        # Everything after description becomes details
-        details = ' '.join(parts[2:]) if len(parts) > 2 else ""
+        print(f"Parsed: Amount={amount}, Description={description}, Details={details}")  # Debug log
         
         category = self._get_category(description.lower())
         
         if not category:
-            keyboard = self._create_category_keyboard(description, amount)
-            await update.message.reply_text("📝 Select category:", reply_markup=InlineKeyboardMarkup(keyboard))
+            # Create category selection keyboard
+            keyboard = []
+            row = []
+            unique_categories = sorted(set(self.categories.values()))
+            
+            for idx, cat in enumerate(unique_categories):
+                if cat:  # Skip empty categories
+                    button = InlineKeyboardButton(
+                        text=cat,
+                        callback_data=f"cat_{description}_{amount}_{cat}_{details}"
+                    )
+                    row.append(button)
+                    
+                    if len(row) == 2 or idx == len(unique_categories) - 1:
+                        keyboard.append(row)
+                        row = []
+            
+            await update.message.reply_text(
+                "📝 Select category:", 
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
             return
         
+        # If category exists, add expense directly
         await self._add_expense(
             amount=amount, 
             description=description, 
             category=category, 
             user=update.effective_user.username or "Unknown", 
             details=details
-)
+        )
         
         msg = f"✅ Added:\nAmount: ₹{amount:.2f}\nDescription: {description}"
         msg += f"\nCategory: {category}"
@@ -1698,6 +2120,7 @@ async def main():
         app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
         app.add_handler(CommandHandler("loan", bot.loan))
         app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
+        app.add_handler(CommandHandler("add", bot.add_historical_entry))
 
         logger.info("Starting polling...")
         
