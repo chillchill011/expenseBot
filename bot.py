@@ -440,56 +440,6 @@ class ExpenseBot:
             await update.message.reply_text("❌ Error showing comparison options")
 
 
-    def _ensure_investment_sheets_exist(self):
-        """Ensure investment sheets exist with proper headers"""
-        try:
-            current_year = datetime.now().year
-            year_sheet = f"{current_year} Overview"
-            
-            # Check if sheet exists
-            sheet_metadata = self.sheets_service.spreadsheets().get(
-                spreadsheetId=self.spreadsheet_id
-            ).execute()
-            
-            existing_sheets = sheet_metadata.get('sheets', [])
-            sheet_exists = any(
-                sheet['properties']['title'] == year_sheet 
-                for sheet in existing_sheets
-            )
-
-            if not sheet_exists:
-                print(f"Creating new investment sheet for {year_sheet}")
-                # Create yearly overview sheet
-                requests = [{
-                    'addSheet': {
-                        'properties': {
-                            'title': year_sheet
-                        }
-                    }
-                }]
-                
-                self.sheets_service.spreadsheets().batchUpdate(
-                    spreadsheetId=self.spreadsheet_id,
-                    body={'requests': requests}
-                ).execute()
-
-                # Add headers
-                headers = [['Date', 'Amount', 'Category', 'User', 'Description', 'Returns', 'Return Date']]
-                self.sheets_service.spreadsheets().values().update(
-                    spreadsheetId=self.spreadsheet_id,
-                    range=f'{year_sheet}!A1:G1',
-                    valueInputOption='USER_ENTERED',
-                    body={'values': headers}
-                ).execute()
-                
-                print(f"Created investment sheet {year_sheet} with headers")
-                
-            return True
-                
-        except Exception as e:
-            print(f"Error ensuring investment sheet exists: {e}")
-            raise
-
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle all messages"""
@@ -2195,7 +2145,7 @@ async def main():
         # Load configuration
         token = os.getenv('TELEGRAM_TOKEN')
         spreadsheet_id = os.getenv('SPREADSHEET_ID')
-        credentials_path = os.getenv('GOOGLE_CREDENTIALS_BASE64')
+        credentials_base64 = os.getenv('GOOGLE_CREDENTIALS_BASE64')
         
         if credentials_base64:
             credentials_json = base64.b64decode(credentials_base64)
