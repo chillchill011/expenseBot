@@ -1,5 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
+import base64
+import json
 import os
 import asyncio
 import nest_asyncio
@@ -2193,8 +2195,17 @@ async def main():
         # Load configuration
         token = os.getenv('TELEGRAM_TOKEN')
         spreadsheet_id = os.getenv('SPREADSHEET_ID')
-        credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH')
+        credentials_path = os.getenv('GOOGLE_CREDENTIALS_BASE64')
         
+        if credentials_base64:
+            credentials_json = base64.b64decode(credentials_base64)
+            credentials_path = 'google-credentials.json'
+            with open(credentials_path, 'wb') as f:
+                f.write(credentials_json)
+        else:
+            # Fallback to local file if base64 not provided
+            credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
+
         logger.info("Starting bot initialization...")
         
         # Initialize bot
