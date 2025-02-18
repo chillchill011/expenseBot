@@ -2169,11 +2169,101 @@ async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYP
         print(f"Error: {e}")
         await update.message.reply_text("❌ Error adding expense")
 
-def run_dummy_server():
+
+def main():
     """
+    Synchronous main function that uses webhooks with python-telegram-bot.
+    """
+    import logging
+    from telegram.ext import (
+        Application, CommandHandler, MessageHandler,
+        CallbackQueryHandler, filters
+    )
+    from telegram import Update
+    from telegram.ext import ContextTypes
+
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.DEBUG
+    )
+    logger = logging.getLogger(__name__)
+
+    # Load environment variables
+    token = os.getenv('TELEGRAM_TOKEN')
+    spreadsheet_id = os.getenv('SPREADSHEET_ID')
+    credentials_base64 = os.getenv('GOOGLE_CREDENTIALS_BASE64')
+    
+    # Decode credentials if needed
+    if credentials_base64:
+        credentials_json = base64.b64decode(credentials_base64)
+        credentials_path = 'google-credentials.json'
+        with open(credentials_path, 'wb') as f:
+            f.write(credentials_json)
+    else:
+        credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
+
+    logger.info("Starting bot initialization...")
+
+    # Instantiate your ExpenseBot
+    bot = ExpenseBot(token, spreadsheet_id, credentials_path)
+    
+    # Build the PTB Application
+    app = Application.builder().token(token).build()
+
+    # Optional: add an error handler
+    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.warning('Update "%s" caused error "%s"', update, context.error)
+    app.add_error_handler(error_handler)
+    
+    # Register handlers (commands, messages, callback queries, etc.)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
+    app.add_handler(CallbackQueryHandler(bot.button_handler))
+    app.add_handler(CommandHandler("start", bot.start))
+    app.add_handler(CommandHandler("delete", bot.delete_last_entry))
+    app.add_handler(CommandHandler("edit", bot.edit_last_entry))
+    app.add_handler(CommandHandler("category", bot.add_category))
+    app.add_handler(CommandHandler("view", bot.view_categories))
+    app.add_handler(CommandHandler("compare", bot.compare_expenses))
+    app.add_handler(CommandHandler("summary", bot.show_summary))
+    app.add_handler(CommandHandler("invest", bot.invest))
+    app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
+    app.add_handler(CommandHandler("loan", bot.loan))
+    app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
+    app.add_handler(CommandHandler("add", bot.add_historical_entry))
+
+    logger.info("Starting bot in webhook mode...")
+
+    # ------------------- WEBHOOK CONFIG ------------------- #
+    # 1) Read the PORT from Render's environment
+    port = int(os.environ.get("PORT", 8000))
+    # 2) Your Render subdomain, e.g. "mybot.onrender.com"
+    domain = "https://expensebot-chatgpt-version.onrender.com"  # Replace <yourapp> with your actual subdomain
+    # 3) The path portion of your webhook URL
+    webhook_path = "/webhook"
+    # Full webhook URL that Telegram will call
+    webhook_url = f"https://{domain}{webhook_path}"
+
+    # 4) Start listening in webhook mode
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        webhook_path=webhook_path,
+        webhook_url=webhook_url,
+    )
+
+if __name__ == '__main__':
+    # Just call main() - no run_dummy_server, no run_polling
+    main()
+
+
+
+
+"""
+def run_dummy_server():
+    
     Spins up a minimal HTTP server so Render sees an open port.
     Does nothing except respond '200 OK' to GET requests.
-    """
+    
     port = int(os.environ.get("PORT", 8000))  # Render provides the PORT env var
     handler = http.server.SimpleHTTPRequestHandler
     with socketserver.TCPServer(("", port), handler) as httpd:
@@ -2181,9 +2271,7 @@ def run_dummy_server():
         httpd.serve_forever()
 
 def main():
-    """
-    Synchronous main function so that PTB can manage the asyncio loop itself.
-    """
+    
     # Basic logging
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -2237,7 +2325,7 @@ def main():
     logger.info("Starting polling...")
 
     # Run in blocking (synchronous) mode. PTB will handle its own event loop.
-    app.run_polling()
+    #app.run_polling()
 
 ################################################################################
 #                  START EVERYTHING IN if __name__ == "__main__"              #
@@ -2245,7 +2333,8 @@ def main():
 
 if __name__ == '__main__':
     # 1) Start dummy server in background for Render's port
-    threading.Thread(target=run_dummy_server, daemon=True).start()
+   # threading.Thread(target=run_dummy_server, daemon=True).start()
 
     # 2) Call main() synchronously
     main()
+    """
