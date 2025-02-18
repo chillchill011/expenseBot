@@ -71,26 +71,55 @@ class ExpenseBot:
     def _start_scheduler(self):
         """Start the scheduler in a separate thread."""
         def run_scheduler():
-            # Schedule sheet creation for first day of each month at 00:05
-            schedule.every().day.at("22:00").do(
-                self._check_and_create_sheet
-            )
-            
-            while True:
-                schedule.run_pending()
-                time.sleep(60)  # Check every minute
+            try:
+                print(f"[Scheduler] Starting scheduler thread at {datetime.now()}")
+                
+                # For testing - set to a time a few minutes from now
+                current_time = datetime.now()
+                test_time = (current_time + timedelta(minutes=2)).strftime("%H:%M")
+                print(f"[Scheduler] Setting up schedule for {test_time}")
+                
+                schedule.every().day.at(test_time).do(
+                    self._check_and_create_sheet
+                )
+                
+                print("[Scheduler] Schedule set up successfully")
+                
+                while True:
+                    try:
+                        schedule.run_pending()
+                        time.sleep(60)  # Check every minute
+                    except Exception as e:
+                        print(f"[Scheduler] Error in scheduler loop: {e}")
+                        time.sleep(60)  # Keep running even if there's an error
+                    
+            except Exception as e:
+                print(f"[Scheduler] Fatal error in scheduler thread: {e}")
 
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
         scheduler_thread.start()
+        print("[Scheduler] Scheduler thread started")
 
     def _check_and_create_sheet(self):
-        """Test version - remove True after testing"""
-        current_date = datetime.now()
-        if True or current_date.day == 1:  # Will run every time for testing
+        """Check if it's first day of month and create sheet if needed."""
+        try:
+            current_date = datetime.now()
+            print(f"[Scheduler] Running sheet check at {current_date}")
+            
+            # For testing - always create sheet
+            print("[Scheduler] Test mode: Creating sheet regardless of date")
             self._create_next_month_sheet()
-            print(f"Scheduler triggered on {current_date} - Sheet creation attempted")
-        else:
-            print(f"Scheduler check on {current_date} - Not first day of month")
+            print(f"[Scheduler] Sheet creation check completed at {current_date}")
+            
+            # Uncomment this for production and remove the above test code
+            # if current_date.day == 1:
+            #     print("[Scheduler] First day of month - creating sheet")
+            #     self._create_next_month_sheet()
+            # else:
+            #     print(f"[Scheduler] Not first day of month (day = {current_date.day})")
+                
+        except Exception as e:
+            print(f"[Scheduler] Error in check_and_create_sheet: {e}")
 
     def _create_next_month_sheet(self):
         """Create sheet for next month."""
@@ -105,14 +134,14 @@ class ExpenseBot:
                 next_year = current_date.year
 
             sheet_name = f"{next_year}-{next_month:02d}"
-            print(f"Creating sheet for {sheet_name}")
+            print(f"[Scheduler] Attempting to create sheet: {sheet_name}")
             
             # Use existing _ensure_monthly_sheet_exists method
             self._ensure_monthly_sheet_exists(sheet_name)
-            print(f"Successfully created sheet for {sheet_name}")
+            print(f"[Scheduler] Successfully created sheet: {sheet_name}")
                 
         except Exception as e:
-            print(f"Error creating next month's sheet: {e}")
+            print(f"[Scheduler] Error creating next month's sheet: {e}")
 
 
     def _load_categories(self) -> dict:
