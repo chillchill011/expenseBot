@@ -3,10 +3,8 @@ load_dotenv()
 import base64
 import json
 import os
-import http.server
 import asyncio
 import nest_asyncio
-import socketserver
 from datetime import datetime, timedelta
 import logging
 import threading
@@ -2172,17 +2170,7 @@ async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYP
         print(f"Error: {e}")
         await update.message.reply_text("❌ Error adding expense")
 
-def run_dummy_server():
-        """
-        Spins up a minimal HTTP server so Render sees an open port.
-        Does nothing except respond '200 OK' to GET requests.
-        """
-        port = int(os.environ.get("PORT", 8000))  # Render gives us the PORT env variable
-        handler = http.server.SimpleHTTPRequestHandler
 
-        with socketserver.TCPServer(("", port), handler) as httpd:
-            print(f"[Dummy Server] Running on port {port}")
-            httpd.serve_forever()
 
 async def main():
     try:
@@ -2261,8 +2249,4 @@ async def main():
         raise
 
 if __name__ == '__main__':
-    # Start the dummy HTTP server in a background thread
-    threading.Thread(target=run_dummy_server, daemon=True).start()
-
-    # Now launch your existing async bot logic
     asyncio.run(main())
