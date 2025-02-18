@@ -2239,7 +2239,7 @@ def main():
     # 2) Your Render subdomain, e.g. "mybot.onrender.com"
     domain = "https://expensebot-chatgpt-version.onrender.com"  # Replace <yourapp> with your actual subdomain
     # 3) The path portion of your webhook URL
-    webhook_path = "/webhook"
+    webhook_path = "https://expensebot-chatgpt-version.onrender.com/webhook"
     # Full webhook URL that Telegram will call
     webhook_url = f"https://{domain}{webhook_path}"
 
