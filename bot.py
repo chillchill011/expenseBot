@@ -74,7 +74,7 @@ class ExpenseBot:
             try:
                 print(f"[Scheduler] Starting scheduler thread at {datetime.now()}")
                 
-                # For testing - set to a time a few minutes from now
+                # Schedule for 2 minutes from now for testing
                 current_time = datetime.now()
                 test_time = (current_time + timedelta(minutes=2)).strftime("%H:%M")
                 print(f"[Scheduler] Setting up schedule for {test_time}")
@@ -84,21 +84,19 @@ class ExpenseBot:
                 )
                 
                 print("[Scheduler] Schedule set up successfully")
+                print("[Scheduler] Scheduler thread started")
                 
                 while True:
                     try:
                         schedule.run_pending()
-                        time.sleep(60)  # Check every minute
+                        time.sleep(60)
                     except Exception as e:
                         print(f"[Scheduler] Error in scheduler loop: {e}")
-                        time.sleep(60)  # Keep running even if there's an error
-                    
             except Exception as e:
                 print(f"[Scheduler] Fatal error in scheduler thread: {e}")
 
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
         scheduler_thread.start()
-        print("[Scheduler] Scheduler thread started")
 
     def _check_and_create_sheet(self):
         """Check if it's first day of month and create sheet if needed."""
@@ -2200,18 +2198,16 @@ async def main():
         # Initialize bot
         bot = ExpenseBot(token, spreadsheet_id, credentials_path)
         
-        # Create application with specific defaults
-        app = Application.builder().token(token).arbitrary_callback_data(True).build()
+        # Create application
+        app = Application.builder().token(token).build()
 
         # Add error handler
         async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning('Update "%s" caused error "%s"', update, context.error)
-            if isinstance(context.error, Conflict):
-                await asyncio.sleep(1)  # Wait a bit before retrying
 
         app.add_error_handler(error_handler)
         
-        # Add your handlers
+        # Add handlers
         app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND, 
             bot.handle_message,
@@ -2239,25 +2235,18 @@ async def main():
 
         logger.info("Starting polling...")
         
-        # Run with modified polling parameters
+        # Run with simplified polling setup
         await app.initialize()
         await app.start()
-        await app.run_polling(
-            poll_interval=1.0,
-            timeout=30,
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES,
-            close_loop=False
-        )
+        await app.updater.start_polling()
+        
+        # Keep the application running
+        await app.updater.stop()
+        await app.stop()
         
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
         raise
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Bot stopped by user")
-    except Exception as e:
-        print(f"Fatal error: {e}")
+    asyncio.run(main())
