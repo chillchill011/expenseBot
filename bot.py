@@ -2209,11 +2209,17 @@ async def main():
         # Run the bot
         await app.run_polling(
             drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES  # Explicitly allow all update types
+            allowed_updates=Update.ALL_TYPES,  # Explicitly allow all update types
+            stop_signals=None  # Added this line
         )
         
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot stopped by user")
+    except Exception as e:
+        print(f"Fatal error: {e}")
