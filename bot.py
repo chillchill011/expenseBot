@@ -11,6 +11,8 @@ import logging
 import threading
 import time
 import schedule
+import requests
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -31,6 +33,44 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+class PingService:
+    def __init__(self, url, interval_minutes=10):
+        self.url = url
+        self.interval_minutes = interval_minutes
+        self.running = False
+        self.last_ping = None
+        self._thread = None
+
+    def start(self):
+        """Start the ping service in a separate thread."""
+        if not self.running:
+            self.running = True
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+            logger.info(f"Ping service started for {self.url}")
+
+    def _run(self):
+        """Run the ping loop."""
+        while self.running:
+            try:
+                response = requests.get(self.url)
+                self.last_ping = datetime.now()
+                logger.info(f"Ping successful: {response.status_code}")
+            except Exception as e:
+                logger.error(f"Ping failed: {e}")
+            
+            # Sleep for the specified interval
+            time.sleep(self.interval_minutes * 60)
+
+    def stop(self):
+        """Stop the ping service."""
+        self.running = False
+        if self._thread:
+            self._thread.join()
+            logger.info("Ping service stopped")
+
+
 class ExpenseBot:
     def __init__(self, token: str, spreadsheet_id: str, credentials_path: str):
         """Initialize bot with necessary credentials and configurations."""
@@ -43,6 +83,11 @@ class ExpenseBot:
         
         # Initialize category cache
         self.categories = self._load_categories()
+
+        # Initialize ping service
+        domain = "expensebot-chatgpt-version.onrender.com"  # Replace with your actual domain
+        self.ping_service = PingService(f"https://{domain}", interval_minutes=10)
+        self.ping_service.start()
 
         # Start the scheduler in a separate thread
         self._start_scheduler()
@@ -2204,6 +2249,12 @@ def main():
 
     logger.info("Starting bot initialization...")
 
+    # Start the ping service
+    domain = "expensebot-chatgpt-version.onrender.com"
+    ping_service = PingService(f"https://{domain}", interval_minutes=10)
+    ping_service.start()
+    logger.info("Ping service started")
+
     # Instantiate your ExpenseBot
     bot = ExpenseBot(token, spreadsheet_id, credentials_path)
     
@@ -2237,24 +2288,31 @@ def main():
     # 1) Read the PORT from Render's environment
     port = int(os.environ.get("PORT", 8000))
     # 2) Your Render subdomain, e.g. "mybot.onrender.com"
-    domain = "expensebot-chatgpt-version.onrender.com"  # Replace <yourapp> with your actual subdomain
+    domain = "expensebot-chatgpt-version.onrender.com"
     # 3) The path portion of your webhook URL
     webhook_path = "/webhook"
     # Full webhook URL that Telegram will call
     webhook_url = f"https://{domain}{webhook_path}"
 
-    # 4) Start listening in webhook mode
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=webhook_path,
-        webhook_url=webhook_url,
-    )
+    try:
+        # 4) Start listening in webhook mode
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=webhook_path,
+            webhook_url=webhook_url,
+        )
+    except Exception as e:
+        logger.error(f"Error starting webhook: {e}")
+        # Stop the ping service if webhook fails
+        ping_service.stop()
+        raise
+    finally:
+        # Ensure ping service is stopped when the bot stops
+        ping_service.stop()
 
 if __name__ == '__main__':
-    # Just call main() - no run_dummy_server, no run_polling
     main()
-
 
 
 
