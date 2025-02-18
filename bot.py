@@ -5,7 +5,6 @@ import json
 import os
 import http.server
 import asyncio
-import nest_asyncio
 import socketserver
 from datetime import datetime, timedelta
 import logging
@@ -24,8 +23,6 @@ from telegram.ext import (
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
-
-nest_asyncio.apply()
 
 # Configure logging
 logging.basicConfig(
