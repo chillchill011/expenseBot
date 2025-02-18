@@ -2250,11 +2250,8 @@ async def main():
         # Run with simplified polling setup
         await app.initialize()
         await app.start()
-        await app.updater.start_polling()
+        await app.run_polling()
         
-        # Keep the application running
-        await app.updater.stop()
-        await app.stop()
         
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
