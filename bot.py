@@ -85,7 +85,7 @@ class ExpenseBot:
 
         # Initialize ping service
         domain = "expensebot-chatgpt-version.onrender.com"  # Replace with your actual domain
-        self.ping_service = PingService(f"https://{domain}", interval_minutes=20)
+        self.ping_service = PingService(f"https://{domain}", interval_minutes=30)
         self.ping_service.start()
 
         # Start the scheduler in a separate thread
@@ -2250,7 +2250,7 @@ def main():
 
     # Start the ping service
     domain = "expensebot-chatgpt-version.onrender.com"
-    ping_service = PingService(f"https://{domain}", interval_minutes=20)
+    ping_service = PingService(f"https://{domain}", interval_minutes=30)
     ping_service.start()
     logger.info("Ping service started")
 
