@@ -2170,91 +2170,87 @@ async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Error adding expense")
 
 def run_dummy_server():
-        """
-        Spins up a minimal HTTP server so Render sees an open port.
-        Does nothing except respond '200 OK' to GET requests.
-        """
-        port = int(os.environ.get("PORT", 8000))  # Render gives us the PORT env variable
-        handler = http.server.SimpleHTTPRequestHandler
+    """
+    Spins up a minimal HTTP server so Render sees an open port.
+    Does nothing except respond '200 OK' to GET requests.
+    """
+    port = int(os.environ.get("PORT", 8000))  # Render provides the PORT env var
+    handler = http.server.SimpleHTTPRequestHandler
 
-        with socketserver.TCPServer(("", port), handler) as httpd:
-            print(f"[Dummy Server] Running on port {port}")
-            httpd.serve_forever()
+    with socketserver.TCPServer(("", port), handler) as httpd:
+        print(f"[Dummy Server] Running on port {port}")
+        httpd.serve_forever()
 
 async def main():
-    try:
-        logging.basicConfig(
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            level=logging.DEBUG
-        )
-        logger = logging.getLogger(__name__)
-        
-        # Load configuration
-        token = os.getenv('TELEGRAM_TOKEN')
-        spreadsheet_id = os.getenv('SPREADSHEET_ID')
-        credentials_base64 = os.getenv('GOOGLE_CREDENTIALS_BASE64')
-        
-        if credentials_base64:
-            credentials_json = base64.b64decode(credentials_base64)
-            credentials_path = 'google-credentials.json'
-            with open(credentials_path, 'wb') as f:
-                f.write(credentials_json)
-        else:
-            credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
+    """Main async entrypoint to initialize and run the Telegram bot."""
+    # Basic logging
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.DEBUG
+    )
+    logger = logging.getLogger(__name__)
+    
+    # Load environment variables
+    token = os.getenv('TELEGRAM_TOKEN')
+    spreadsheet_id = os.getenv('SPREADSHEET_ID')
+    credentials_base64 = os.getenv('GOOGLE_CREDENTIALS_BASE64')
+    
+    # Decode the credentials if needed
+    if credentials_base64:
+        credentials_json = base64.b64decode(credentials_base64)
+        credentials_path = 'google-credentials.json'
+        with open(credentials_path, 'wb') as f:
+            f.write(credentials_json)
+    else:
+        credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
 
-        logger.info("Starting bot initialization...")
-        
-        # Initialize bot
-        bot = ExpenseBot(token, spreadsheet_id, credentials_path)
-        
-        # Create application
-        app = Application.builder().token(token).build()
+    logger.info("Starting bot initialization...")
+    
+    # Initialize your ExpenseBot
+    bot = ExpenseBot(token, spreadsheet_id, credentials_path)
+    
+    # Create the PTB application
+    app = Application.builder().token(token).build()
 
-        # Add error handler
-        async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            logger.warning('Update "%s" caused error "%s"', update, context.error)
+    # Add error handler
+    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.warning('Update "%s" caused error "%s"', update, context.error)
 
-        app.add_error_handler(error_handler)
-        
-        # Add handlers
-        app.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, 
-            bot.handle_message,
-            block=False
-        ))
-        
-        app.add_handler(CallbackQueryHandler(
-            bot.button_handler,
-            block=False
-        ))
-        
-        # Add command handlers
-        app.add_handler(CommandHandler("start", bot.start))
-        app.add_handler(CommandHandler("delete", bot.delete_last_entry))
-        app.add_handler(CommandHandler("edit", bot.edit_last_entry))
-        app.add_handler(CommandHandler("category", bot.add_category))
-        app.add_handler(CommandHandler("view", bot.view_categories))
-        app.add_handler(CommandHandler("compare", bot.compare_expenses))
-        app.add_handler(CommandHandler("summary", bot.show_summary))
-        app.add_handler(CommandHandler("invest", bot.invest))
-        app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
-        app.add_handler(CommandHandler("loan", bot.loan))
-        app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
-        app.add_handler(CommandHandler("add", bot.add_historical_entry))
+    app.add_error_handler(error_handler)
+    
+    # --------------------------------------------------------------------------
+    # HANDLERS
+    # Copy over your command handlers, message handlers, button handlers, etc.
+    # E.g.:
+    from telegram.ext import (
+        CommandHandler, MessageHandler, CallbackQueryHandler, filters
+    )
+    
+    # Example of how to add them:
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message, block=False))
+    app.add_handler(CallbackQueryHandler(bot.button_handler, block=False))
 
-        logger.info("Starting polling...")
-        
-        # Run with simplified polling setup
-        await app.run_polling(close_loop=False)
+    app.add_handler(CommandHandler("start", bot.start))
+    app.add_handler(CommandHandler("delete", bot.delete_last_entry))
+    app.add_handler(CommandHandler("edit", bot.edit_last_entry))
+    app.add_handler(CommandHandler("category", bot.add_category))
+    app.add_handler(CommandHandler("view", bot.view_categories))
+    app.add_handler(CommandHandler("compare", bot.compare_expenses))
+    app.add_handler(CommandHandler("summary", bot.show_summary))
+    app.add_handler(CommandHandler("invest", bot.invest))
+    app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
+    app.add_handler(CommandHandler("loan", bot.loan))
+    app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
+    app.add_handler(CommandHandler("add", bot.add_historical_entry))
+    # --------------------------------------------------------------------------
 
-        
-    except Exception as e:
-        logger.error(f"Error in main: {e}", exc_info=True)
-        raise
+    logger.info("Starting polling...")
+    await app.run_polling(close_loop=False)
+    # That line keeps the bot running until the process is stopped externally
 
 if __name__ == '__main__':
-    # Start the dummy HTTP server in a background thread
+    # 1) Start the dummy HTTP server on the Render-assigned PORT
     threading.Thread(target=run_dummy_server, daemon=True).start()
 
-    # Now launch your existing async bot logic
+    # 2) Run the async main() which starts the Telegram bot
     asyncio.run(main())
