@@ -2248,8 +2248,6 @@ async def main():
         logger.info("Starting polling...")
         
         # Run with simplified polling setup
-        await app.initialize()
-        await app.start()
         await app.run_polling()
         
         
