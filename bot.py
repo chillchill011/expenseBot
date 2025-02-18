@@ -2176,26 +2176,27 @@ def run_dummy_server():
     """
     port = int(os.environ.get("PORT", 8000))  # Render provides the PORT env var
     handler = http.server.SimpleHTTPRequestHandler
-
     with socketserver.TCPServer(("", port), handler) as httpd:
         print(f"[Dummy Server] Running on port {port}")
         httpd.serve_forever()
 
-async def main():
-    """Main async entrypoint to initialize and run the Telegram bot."""
+def main():
+    """
+    Synchronous main function so that PTB can manage the asyncio loop itself.
+    """
     # Basic logging
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.DEBUG
     )
     logger = logging.getLogger(__name__)
-    
+
     # Load environment variables
     token = os.getenv('TELEGRAM_TOKEN')
     spreadsheet_id = os.getenv('SPREADSHEET_ID')
     credentials_base64 = os.getenv('GOOGLE_CREDENTIALS_BASE64')
     
-    # Decode the credentials if needed
+    # Decode credentials if needed
     if credentials_base64:
         credentials_json = base64.b64decode(credentials_base64)
         credentials_path = 'google-credentials.json'
@@ -2206,30 +2207,20 @@ async def main():
 
     logger.info("Starting bot initialization...")
     
-    # Initialize your ExpenseBot
+    # Instantiate your ExpenseBot
     bot = ExpenseBot(token, spreadsheet_id, credentials_path)
     
-    # Create the PTB application
+    # Build the PTB Application
     app = Application.builder().token(token).build()
 
-    # Add error handler
+    # Optional: add an error handler
     async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning('Update "%s" caused error "%s"', update, context.error)
-
     app.add_error_handler(error_handler)
     
-    # --------------------------------------------------------------------------
-    # HANDLERS
-    # Copy over your command handlers, message handlers, button handlers, etc.
-    # E.g.:
-    from telegram.ext import (
-        CommandHandler, MessageHandler, CallbackQueryHandler, filters
-    )
-    
-    # Example of how to add them:
+    # Register handlers (commands, messages, callback queries, etc.)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message, block=False))
     app.add_handler(CallbackQueryHandler(bot.button_handler, block=False))
-
     app.add_handler(CommandHandler("start", bot.start))
     app.add_handler(CommandHandler("delete", bot.delete_last_entry))
     app.add_handler(CommandHandler("edit", bot.edit_last_entry))
@@ -2242,15 +2233,19 @@ async def main():
     app.add_handler(CommandHandler("loan", bot.loan))
     app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
     app.add_handler(CommandHandler("add", bot.add_historical_entry))
-    # --------------------------------------------------------------------------
 
     logger.info("Starting polling...")
-    await app.run_polling(close_loop=False)
-    # That line keeps the bot running until the process is stopped externally
+
+    # Run in blocking (synchronous) mode. PTB will handle its own event loop.
+    app.run_polling()
+
+################################################################################
+#                  START EVERYTHING IN if __name__ == "__main__"              #
+################################################################################
 
 if __name__ == '__main__':
-    # 1) Start the dummy HTTP server on the Render-assigned PORT
+    # 1) Start dummy server in background for Render's port
     threading.Thread(target=run_dummy_server, daemon=True).start()
 
-    # 2) Run the async main() which starts the Telegram bot
-    asyncio.run(main())
+    # 2) Call main() synchronously
+    main()
