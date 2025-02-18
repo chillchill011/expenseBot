@@ -2178,7 +2178,7 @@ async def main():
     try:
         logging.basicConfig(
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            level=logging.DEBUG  # Set to DEBUG for more verbose logging
+            level=logging.DEBUG
         )
         logger = logging.getLogger(__name__)
         
@@ -2193,7 +2193,6 @@ async def main():
             with open(credentials_path, 'wb') as f:
                 f.write(credentials_json)
         else:
-            # Fallback to local file if base64 not provided
             credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
 
         logger.info("Starting bot initialization...")
@@ -2201,19 +2200,24 @@ async def main():
         # Initialize bot
         bot = ExpenseBot(token, spreadsheet_id, credentials_path)
         
-        # Create application
-        app = Application.builder().token(token).build()
+        # Create application with specific defaults
+        app = Application.builder().token(token).arbitrary_callback_data(True).build()
+
+        # Add error handler
+        async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            logger.warning('Update "%s" caused error "%s"', update, context.error)
+            if isinstance(context.error, Conflict):
+                await asyncio.sleep(1)  # Wait a bit before retrying
+
+        app.add_error_handler(error_handler)
         
-        logger.info("Adding handlers...")
-        
-        # Add message handler for text messages (this should catch the initial expense messages)
+        # Add your handlers
         app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND, 
             bot.handle_message,
             block=False
         ))
         
-        # Add callback query handler (this should catch the button presses)
         app.add_handler(CallbackQueryHandler(
             bot.button_handler,
             block=False
@@ -2235,15 +2239,20 @@ async def main():
 
         logger.info("Starting polling...")
         
-        # Run the bot
+        # Run with modified polling parameters
+        await app.initialize()
+        await app.start()
         await app.run_polling(
+            poll_interval=1.0,
+            timeout=30,
             drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES,  # Explicitly allow all update types
-            stop_signals=None  # Added this line
+            allowed_updates=Update.ALL_TYPES,
+            close_loop=False
         )
         
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
+        raise
 
 if __name__ == '__main__':
     try:
