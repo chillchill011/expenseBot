@@ -2248,8 +2248,8 @@ async def main():
         logger.info("Starting polling...")
         
         # Run with simplified polling setup
-        await app.run_polling()
-        
+        await app.run_polling(close_loop=False)
+
         
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
