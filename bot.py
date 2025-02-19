@@ -2283,11 +2283,10 @@ def main():
 
     logger.info("Starting bot initialization...")
 
-    # Start the ping service
+    # Initialize ping service
     domain = "expensebot-chatgpt-version.onrender.com"
-    ping_service = PingService(f"https://{domain}", interval_minutes=30)
-    ping_service.start()
-    logger.info("Ping service started")
+    ping_service = PingService(f"https://{domain}")  # Remove interval_minutes
+    logger.info("Ping service initialized")
 
     # Instantiate your ExpenseBot
     bot = ExpenseBot(token, spreadsheet_id, credentials_path)
