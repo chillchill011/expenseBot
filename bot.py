@@ -38,34 +38,42 @@ class PingService:
         self.url = url
         self.is_active = False
         self.last_ping = None
-        self.last_active = datetime.now()  # Track last active time
 
     def activate(self):
-        """Activate the service with a single ping."""
+        """Activate the service by sending a ping request to itself."""
         try:
-            response = requests.get(self.url)
-            self.last_ping = datetime.now()
-            self.last_active = datetime.now()  # Update last active
-            self.is_active = True
-            logger.info(f"Ping successful: {response.status_code}")
-            return True
+            response = requests.get(self.url + "/health")  # Ping the bot's health check endpoint
+            if response.status_code == 200:
+                self.last_ping = datetime.now()
+                self.is_active = True
+                logger.info(f"Ping successful: {response.status_code}")
+                return True
+            else:
+                logger.error(f"Ping failed with status code: {response.status_code}")
+                return False
         except Exception as e:
             logger.error(f"Ping failed: {e}")
             return False
 
-    def deactivate(self):
-        """Deactivate the service."""
-        self.is_active = False
-        logger.info("Service deactivated")
+    def check_status(self):
+        """Check if the bot is actually awake by sending a request to itself."""
+        try:
+            response = requests.get(self.url + "/health")
+            if response.status_code == 200:
+                self.is_active = True
+            else:
+                self.is_active = False
+        except:
+            self.is_active = False
+        return self.is_active
 
     def get_status(self):
-        """Get current status of the service."""
-        time_since_last_active = datetime.now() - self.last_active
+        """Get the current status of the bot."""
         return {
             'active': self.is_active,
-            'last_ping': self.last_ping.strftime('%Y-%m-%d %H:%M:%S') if self.last_ping else None,
-            'time_since_last_active': time_since_last_active.total_seconds()
+            'last_ping': self.last_ping.strftime('%Y-%m-%d %H:%M:%S') if self.last_ping else None
         }
+
 
 
 
@@ -191,9 +199,8 @@ class ExpenseBot:
 
     async def coldstart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /coldstart command."""
-        if not self.ping_service.is_active:
+        if not self.ping_service.check_status():
             if self.ping_service.activate():
-                self.ping_service.last_active = datetime.now()  # Ensure it's marked as active
                 await update.message.reply_text(
                     "🟢 Bot Successfully Activated!\n\n"
                     "I'm awake and ready to help you track expenses.\n\n"
@@ -213,22 +220,17 @@ class ExpenseBot:
             )
 
 
+
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /status command."""
+        self.ping_service.check_status()  # Actively check status before reporting
+
         status = self.ping_service.get_status()
-        time_since_last_active = status['time_since_last_active']
-        
-        if time_since_last_active > 3600:  # If more than 1 hour since last active
-            message = (
-                "⚠️ Bot appears to have been asleep due to inactivity.\n\n"
-                "🔴 Bot Status: Inactive\n"
-                "Use /coldstart to activate the bot."
-            )
-        elif status['active']:
+        if status['active']:
             last_ping = status['last_ping']
             message = (
                 "🟢 Bot Status: Active\n"
-                f"Last activated: {last_ping}\n"
+                f"Last checked: {last_ping}\n"
                 "Ready to process commands!"
             )
         else:
@@ -236,8 +238,8 @@ class ExpenseBot:
                 "🔴 Bot Status: Inactive\n"
                 "Use /coldstart to activate the bot."
             )
-
         await update.message.reply_text(message)
+
 
 
 
