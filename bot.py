@@ -40,41 +40,28 @@ class PingService:
         self.last_ping = None
 
     def activate(self):
-        """Activate the service by sending a ping request to itself."""
+        """Activate the service with a single ping."""
         try:
-            response = requests.get(self.url + "/health")  # Ping the bot's health check endpoint
-            if response.status_code == 200:
-                self.last_ping = datetime.now()
-                self.is_active = True
-                logger.info(f"Ping successful: {response.status_code}")
-                return True
-            else:
-                logger.error(f"Ping failed with status code: {response.status_code}")
-                return False
+            response = requests.get(self.url)
+            self.last_ping = datetime.now()
+            self.is_active = True
+            logger.info(f"Ping successful: {response.status_code}")
+            return True
         except Exception as e:
             logger.error(f"Ping failed: {e}")
             return False
 
-    def check_status(self):
-        """Check if the bot is actually awake by sending a request to itself."""
-        try:
-            response = requests.get(self.url + "/health")
-            if response.status_code == 200:
-                self.is_active = True
-            else:
-                self.is_active = False
-        except:
-            self.is_active = False
-        return self.is_active
+    def deactivate(self):
+        """Deactivate the service."""
+        self.is_active = False
+        logger.info("Service deactivated")
 
     def get_status(self):
-        """Get the current status of the bot."""
+        """Get current status of the service."""
         return {
             'active': self.is_active,
             'last_ping': self.last_ping.strftime('%Y-%m-%d %H:%M:%S') if self.last_ping else None
         }
-
-
 
 
 class ExpenseBot:
@@ -199,7 +186,7 @@ class ExpenseBot:
 
     async def coldstart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /coldstart command."""
-        if not self.ping_service.check_status():
+        if not self.ping_service.is_active:
             if self.ping_service.activate():
                 await update.message.reply_text(
                     "🟢 Bot Successfully Activated!\n\n"
@@ -219,18 +206,14 @@ class ExpenseBot:
                 "Example: 50 milk or 100 food, lunch"
             )
 
-
-
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /status command."""
-        self.ping_service.check_status()  # Actively check status before reporting
-
         status = self.ping_service.get_status()
         if status['active']:
             last_ping = status['last_ping']
             message = (
                 "🟢 Bot Status: Active\n"
-                f"Last checked: {last_ping}\n"
+                f"Last activated: {last_ping}\n"
                 "Ready to process commands!"
             )
         else:
@@ -239,8 +222,6 @@ class ExpenseBot:
                 "Use /coldstart to activate the bot."
             )
         await update.message.reply_text(message)
-
-
 
 
     def _load_categories(self) -> dict:
