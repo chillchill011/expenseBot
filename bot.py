@@ -67,9 +67,11 @@ class PingService:
 class ExpenseBot:
     def __init__(self, token: str, spreadsheet_id: str, credentials_path: str):
         """Initialize bot with necessary credentials and configurations."""
+        self.spreadsheet_id = spreadsheet_id
+
         try:
             # Decode base64 credentials and load as JSON
-            credentials_json = base64.b64decode(credentials_base64).decode('utf-8')
+            credentials_json = base64.b64decode(credentials_info).decode('utf-8')
             self.credentials = service_account.Credentials.from_service_account_info(
                 json.loads(credentials_json),
                 scopes=['https://www.googleapis.com/auth/spreadsheets']
@@ -78,7 +80,7 @@ class ExpenseBot:
             logger.error(f"Error initializing credentials: {e}")
             raise
 
-        self.spreadsheet_id = spreadsheet_id
+        
         self.sheets_service = build('sheets', 'v4', credentials=self.credentials)
         
         # Initialize category cache
@@ -2268,87 +2270,72 @@ def main():
     from telegram import Update
     from telegram.ext import ContextTypes
 
-    # Set up more detailed logging
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.DEBUG  # Change to DEBUG level
+        level=logging.DEBUG
     )
     logger = logging.getLogger(__name__)
 
     # Load environment variables
     token = os.getenv('TELEGRAM_TOKEN')
     spreadsheet_id = os.getenv('SPREADSHEET_ID')
-    credentials_base64 = os.getenv('GOOGLE_CREDENTIALS_BASE64')
+    credentials_info = os.getenv('GOOGLE_CREDENTIALS_BASE64')
     
-    if not all([token, spreadsheet_id, credentials_base64]):
+    if not all([token, spreadsheet_id, credentials_info]):
         logger.error("Missing required environment variables")
         return
-        
+
     logger.info("Starting bot initialization...")
-    
-    # Initialize bot and handlers
+
     try:
         # Instantiate your ExpenseBot
-        bot = ExpenseBot(token, spreadsheet_id, credentials_base64)
+        bot = ExpenseBot(token, spreadsheet_id, credentials_info)
         
-        # Build application
-        application = (
-            Application.builder()
-            .token(token)
-            .build()
-        )
-        
-        # Add handlers with logging
-        logger.info("Registering command handlers...")
-        
-        # Add command handlers
-        commands = {
-            "start": bot.start,
-            "coldstart": bot.coldstart,
-            "status": bot.status,
-            "delete": bot.delete_last_entry,
-            "edit": bot.edit_last_entry,
-            "category": bot.add_category,
-            "view": bot.view_categories,
-            "compare": bot.compare_expenses,
-            "summary": bot.show_summary,
-            "invest": bot.invest,
-            "inv_compare": bot.compare_investments,
-            "loan": bot.loan,
-            "loan_compare": bot.compare_loans,
-            "add": bot.add_historical_entry
-        }
-        
-        for command, handler in commands.items():
-            application.add_handler(CommandHandler(command, handler))
-            logger.info(f"Registered handler for /{command}")
-            
-        # Add message and callback handlers
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
-        application.add_handler(CallbackQueryHandler(bot.button_handler))
-        
-        logger.info("All handlers registered successfully")
+        # Build the PTB Application
+        app = Application.builder().token(token).build()
 
-        # Set up webhook
+        # Optional: add an error handler
+        async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            logger.warning('Update "%s" caused error "%s"', update, context.error)
+        app.add_error_handler(error_handler)
+        
+        # Register handlers
+        app.add_handler(CommandHandler("start", bot.start))
+        app.add_handler(CommandHandler("coldstart", bot.coldstart))
+        app.add_handler(CommandHandler("status", bot.status))
+        app.add_handler(CommandHandler("delete", bot.delete_last_entry))
+        app.add_handler(CommandHandler("edit", bot.edit_last_entry))
+        app.add_handler(CommandHandler("category", bot.add_category))
+        app.add_handler(CommandHandler("view", bot.view_categories))
+        app.add_handler(CommandHandler("compare", bot.compare_expenses))
+        app.add_handler(CommandHandler("summary", bot.show_summary))
+        app.add_handler(CommandHandler("invest", bot.invest))
+        app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
+        app.add_handler(CommandHandler("loan", bot.loan))
+        app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
+        app.add_handler(CommandHandler("add", bot.add_historical_entry))
+        
+        # Message and callback handlers
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
+        app.add_handler(CallbackQueryHandler(bot.button_handler))
+
+        logger.info("Starting bot in webhook mode...")
+
+        # Webhook configuration
         port = int(os.environ.get("PORT", 8000))
         domain = "expensebot-chatgpt-version.onrender.com"
-        webhook_path = f"/webhook_{token}"  # Make webhook path unique
+        webhook_path = "/webhook"
         webhook_url = f"https://{domain}{webhook_path}"
-        
-        logger.info(f"Starting webhook on port {port}")
-        logger.info(f"Webhook URL: {webhook_url}")
 
-        # Start webhook
-        application.run_webhook(
+        app.run_webhook(
             listen="0.0.0.0",
             port=port,
             url_path=webhook_path,
             webhook_url=webhook_url,
-            drop_pending_updates=True  # Add this to clear any pending updates
+            drop_pending_updates=True
         )
-        
     except Exception as e:
-        logger.error(f"Error in main: {e}", exc_info=True)
+        logger.error(f"Error in main: {e}")
         raise
 
 if __name__ == '__main__':
