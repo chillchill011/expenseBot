@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 import base64
-# import json
+import json
 import os
 # import http.server
 import asyncio
@@ -67,11 +67,18 @@ class PingService:
 class ExpenseBot:
     def __init__(self, token: str, spreadsheet_id: str, credentials_path: str):
         """Initialize bot with necessary credentials and configurations."""
+        try:
+            # Decode base64 credentials and load as JSON
+            credentials_json = base64.b64decode(credentials_base64).decode('utf-8')
+            self.credentials = service_account.Credentials.from_service_account_info(
+                json.loads(credentials_json),
+                scopes=['https://www.googleapis.com/auth/spreadsheets']
+            )
+        except Exception as e:
+            logger.error(f"Error initializing credentials: {e}")
+            raise
+
         self.spreadsheet_id = spreadsheet_id
-        self.credentials = service_account.Credentials.from_service_account_file(
-            credentials_path,
-            scopes=['https://www.googleapis.com/auth/spreadsheets']
-        )
         self.sheets_service = build('sheets', 'v4', credentials=self.credentials)
         
         # Initialize category cache
@@ -2273,8 +2280,8 @@ def main():
     spreadsheet_id = os.getenv('SPREADSHEET_ID')
     credentials_base64 = os.getenv('GOOGLE_CREDENTIALS_BASE64')
     
-    if not token:
-        logger.error("No token found!")
+    if not all([token, spreadsheet_id, credentials_base64]):
+        logger.error("Missing required environment variables")
         return
         
     logger.info("Starting bot initialization...")
