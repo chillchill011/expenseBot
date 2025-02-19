@@ -71,7 +71,7 @@ class ExpenseBot:
 
         try:
             # Decode base64 credentials and load as JSON
-            credentials_json = base64.b64decode(credentials_info).decode('utf-8')
+            credentials_json = base64.b64decode(credentials_path).decode('utf-8')
             self.credentials = service_account.Credentials.from_service_account_info(
                 json.loads(credentials_json),
                 scopes=['https://www.googleapis.com/auth/spreadsheets']
