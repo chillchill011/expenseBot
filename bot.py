@@ -2283,11 +2283,6 @@ def main():
 
     logger.info("Starting bot initialization...")
 
-    # Initialize ping service
-    domain = "expensebot-chatgpt-version.onrender.com"
-    ping_service = PingService(f"https://{domain}")  # Remove interval_minutes
-    logger.info("Ping service initialized")
-
     # Instantiate your ExpenseBot
     bot = ExpenseBot(token, spreadsheet_id, credentials_path)
     
@@ -2299,10 +2294,10 @@ def main():
         logger.warning('Update "%s" caused error "%s"', update, context.error)
     app.add_error_handler(error_handler)
     
-    # Register handlers (commands, messages, callback queries, etc.)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
-    app.add_handler(CallbackQueryHandler(bot.button_handler))
+    # Register command handlers first
     app.add_handler(CommandHandler("start", bot.start))
+    app.add_handler(CommandHandler("coldstart", bot.coldstart))  # Add this first
+    app.add_handler(CommandHandler("status", bot.status))       # Add this first
     app.add_handler(CommandHandler("delete", bot.delete_last_entry))
     app.add_handler(CommandHandler("edit", bot.edit_last_entry))
     app.add_handler(CommandHandler("category", bot.add_category))
@@ -2314,23 +2309,20 @@ def main():
     app.add_handler(CommandHandler("loan", bot.loan))
     app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
     app.add_handler(CommandHandler("add", bot.add_historical_entry))
-    app.add_handler(CommandHandler("coldstart", bot.coldstart))
-    app.add_handler(CommandHandler("status", bot.status))
+
+    # Register message and callback handlers last
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
+    app.add_handler(CallbackQueryHandler(bot.button_handler))
 
     logger.info("Starting bot in webhook mode...")
 
     # ------------------- WEBHOOK CONFIG ------------------- #
-    # 1) Read the PORT from Render's environment
     port = int(os.environ.get("PORT", 8000))
-    # 2) Your Render subdomain, e.g. "mybot.onrender.com"
     domain = "expensebot-chatgpt-version.onrender.com"
-    # 3) The path portion of your webhook URL
     webhook_path = "/webhook"
-    # Full webhook URL that Telegram will call
     webhook_url = f"https://{domain}{webhook_path}"
 
     try:
-        # 4) Start listening in webhook mode
         app.run_webhook(
             listen="0.0.0.0",
             port=port,
@@ -2339,16 +2331,13 @@ def main():
         )
     except Exception as e:
         logger.error(f"Error starting webhook: {e}")
-        # Deactivate the ping service if webhook fails
-        ping_service.deactivate()
+        bot.ping_service.deactivate()
         raise
     finally:
-        # Ensure ping service is deactivated when the bot stops
-        ping_service.deactivate()
+        bot.ping_service.deactivate()
 
 if __name__ == '__main__':
     main()
-
 
 
 """
