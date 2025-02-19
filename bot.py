@@ -2261,9 +2261,10 @@ def main():
     from telegram import Update
     from telegram.ext import ContextTypes
 
+    # Set up more detailed logging
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.DEBUG
+        level=logging.DEBUG  # Change to DEBUG level
     )
     logger = logging.getLogger(__name__)
 
@@ -2272,69 +2273,76 @@ def main():
     spreadsheet_id = os.getenv('SPREADSHEET_ID')
     credentials_base64 = os.getenv('GOOGLE_CREDENTIALS_BASE64')
     
-    # Decode credentials if needed
-    if credentials_base64:
-        credentials_json = base64.b64decode(credentials_base64)
-        credentials_path = 'google-credentials.json'
-        with open(credentials_path, 'wb') as f:
-            f.write(credentials_json)
-    else:
-        credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
-
+    if not token:
+        logger.error("No token found!")
+        return
+        
     logger.info("Starting bot initialization...")
-
-    # Instantiate your ExpenseBot
-    bot = ExpenseBot(token, spreadsheet_id, credentials_path)
     
-    # Build the PTB Application
-    app = Application.builder().token(token).build()
-
-    # Optional: add an error handler
-    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.warning('Update "%s" caused error "%s"', update, context.error)
-    app.add_error_handler(error_handler)
-    
-    # Register command handlers first
-    app.add_handler(CommandHandler("start", bot.start))
-    app.add_handler(CommandHandler("coldstart", bot.coldstart))  # Add this first
-    app.add_handler(CommandHandler("status", bot.status))       # Add this first
-    app.add_handler(CommandHandler("delete", bot.delete_last_entry))
-    app.add_handler(CommandHandler("edit", bot.edit_last_entry))
-    app.add_handler(CommandHandler("category", bot.add_category))
-    app.add_handler(CommandHandler("view", bot.view_categories))
-    app.add_handler(CommandHandler("compare", bot.compare_expenses))
-    app.add_handler(CommandHandler("summary", bot.show_summary))
-    app.add_handler(CommandHandler("invest", bot.invest))
-    app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
-    app.add_handler(CommandHandler("loan", bot.loan))
-    app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
-    app.add_handler(CommandHandler("add", bot.add_historical_entry))
-
-    # Register message and callback handlers last
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
-    app.add_handler(CallbackQueryHandler(bot.button_handler))
-
-    logger.info("Starting bot in webhook mode...")
-
-    # ------------------- WEBHOOK CONFIG ------------------- #
-    port = int(os.environ.get("PORT", 8000))
-    domain = "expensebot-chatgpt-version.onrender.com"
-    webhook_path = "/webhook"
-    webhook_url = f"https://{domain}{webhook_path}"
-
+    # Initialize bot and handlers
     try:
-        app.run_webhook(
+        # Instantiate your ExpenseBot
+        bot = ExpenseBot(token, spreadsheet_id, credentials_base64)
+        
+        # Build application
+        application = (
+            Application.builder()
+            .token(token)
+            .build()
+        )
+        
+        # Add handlers with logging
+        logger.info("Registering command handlers...")
+        
+        # Add command handlers
+        commands = {
+            "start": bot.start,
+            "coldstart": bot.coldstart,
+            "status": bot.status,
+            "delete": bot.delete_last_entry,
+            "edit": bot.edit_last_entry,
+            "category": bot.add_category,
+            "view": bot.view_categories,
+            "compare": bot.compare_expenses,
+            "summary": bot.show_summary,
+            "invest": bot.invest,
+            "inv_compare": bot.compare_investments,
+            "loan": bot.loan,
+            "loan_compare": bot.compare_loans,
+            "add": bot.add_historical_entry
+        }
+        
+        for command, handler in commands.items():
+            application.add_handler(CommandHandler(command, handler))
+            logger.info(f"Registered handler for /{command}")
+            
+        # Add message and callback handlers
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
+        application.add_handler(CallbackQueryHandler(bot.button_handler))
+        
+        logger.info("All handlers registered successfully")
+
+        # Set up webhook
+        port = int(os.environ.get("PORT", 8000))
+        domain = "expensebot-chatgpt-version.onrender.com"
+        webhook_path = f"/webhook_{token}"  # Make webhook path unique
+        webhook_url = f"https://{domain}{webhook_path}"
+        
+        logger.info(f"Starting webhook on port {port}")
+        logger.info(f"Webhook URL: {webhook_url}")
+
+        # Start webhook
+        application.run_webhook(
             listen="0.0.0.0",
             port=port,
             url_path=webhook_path,
             webhook_url=webhook_url,
+            drop_pending_updates=True  # Add this to clear any pending updates
         )
+        
     except Exception as e:
-        logger.error(f"Error starting webhook: {e}")
-        bot.ping_service.deactivate()
+        logger.error(f"Error in main: {e}", exc_info=True)
         raise
-    finally:
-        bot.ping_service.deactivate()
 
 if __name__ == '__main__':
     main()
