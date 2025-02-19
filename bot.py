@@ -2339,12 +2339,12 @@ def main():
         )
     except Exception as e:
         logger.error(f"Error starting webhook: {e}")
-        # Stop the ping service if webhook fails
-        ping_service.stop()
+        # Deactivate the ping service if webhook fails
+        ping_service.deactivate()
         raise
     finally:
-        # Ensure ping service is stopped when the bot stops
-        ping_service.stop()
+        # Ensure ping service is deactivated when the bot stops
+        ping_service.deactivate()
 
 if __name__ == '__main__':
     main()
