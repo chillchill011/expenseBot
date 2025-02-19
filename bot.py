@@ -3,8 +3,7 @@ load_dotenv()
 import base64
 import json
 import os
-import aiohttp
-import http.server
+# import http.server
 import asyncio
 import socketserver
 from datetime import datetime, timedelta
@@ -39,50 +38,35 @@ class PingService:
         self.url = url
         self.is_active = False
         self.last_ping = None
-        self._session = None
+        self.last_active = datetime.now()  # Track last active time
 
-    async def _ensure_session(self):
-        """Ensure aiohttp session exists"""
-        if self._session is None:
-            self._session = aiohttp.ClientSession()
-        return self._session
-
-    async def activate(self):
+    def activate(self):
         """Activate the service with a single ping."""
         try:
-            session = await self._ensure_session()
-            async with session.get(self.url) as response:
-                if response.status == 200:
-                    self.last_ping = datetime.now()
-                    self.is_active = True
-                    logger.info(f"Ping successful: {response.status}")
-                    return True
-                else:
-                    logger.error(f"Ping failed with status code: {response.status}")
-                    return False
+            response = requests.get(self.url)
+            self.last_ping = datetime.now()
+            self.last_active = datetime.now()  # Update last active
+            self.is_active = True
+            logger.info(f"Ping successful: {response.status_code}")
+            return True
         except Exception as e:
             logger.error(f"Ping failed: {e}")
             return False
 
-    async def check_status(self):
-        """Check current status with a ping."""
-        try:
-            session = await self._ensure_session()
-            async with session.get(self.url) as response:
-                is_active = response.status == 200
-                if is_active:
-                    self.last_ping = datetime.now()
-                    self.is_active = True
-                return is_active
-        except Exception as e:
-            logger.error(f"Status check failed: {e}")
-            return False
+    def deactivate(self):
+        """Deactivate the service."""
+        self.is_active = False
+        logger.info("Service deactivated")
 
-    async def cleanup(self):
-        """Cleanup resources."""
-        if self._session is not None:
-            await self._session.close()
-            self._session = None
+    def get_status(self):
+        """Get current status of the service."""
+        time_since_last_active = datetime.now() - self.last_active
+        return {
+            'active': self.is_active,
+            'last_ping': self.last_ping.strftime('%Y-%m-%d %H:%M:%S') if self.last_ping else None,
+            'time_since_last_active': time_since_last_active.total_seconds()
+        }
+
 
 
 class ExpenseBot:
@@ -208,7 +192,8 @@ class ExpenseBot:
     async def coldstart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /coldstart command."""
         if not self.ping_service.is_active:
-            if await self.ping_service.activate():
+            if self.ping_service.activate():
+                self.ping_service.last_active = datetime.now()  # Ensure it's marked as active
                 await update.message.reply_text(
                     "🟢 Bot Successfully Activated!\n\n"
                     "I'm awake and ready to help you track expenses.\n\n"
@@ -227,27 +212,33 @@ class ExpenseBot:
                 "Example: 50 milk or 100 food, lunch"
             )
 
+
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /status command."""
-        try:
-            is_active = await self.ping_service.check_status()
-            
-            if is_active:
-                last_ping = self.ping_service.last_ping
-                message = (
-                    "🟢 Bot Status: Active\n"
-                    f"Last activated: {last_ping.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    "Ready to process commands!"
-                )
-            else:
-                message = (
-                    "🔴 Bot Status: Inactive\n"
-                    "Use /coldstart to activate the bot."
-                )
-            await update.message.reply_text(message)
-        except Exception as e:
-            logger.error(f"Error checking status: {e}")
-            await update.message.reply_text("❌ Error checking bot status")
+        status = self.ping_service.get_status()
+        time_since_last_active = status['time_since_last_active']
+        
+        if time_since_last_active > 3600:  # If more than 1 hour since last active
+            message = (
+                "⚠️ Bot appears to have been asleep due to inactivity.\n\n"
+                "🔴 Bot Status: Inactive\n"
+                "Use /coldstart to activate the bot."
+            )
+        elif status['active']:
+            last_ping = status['last_ping']
+            message = (
+                "🟢 Bot Status: Active\n"
+                f"Last activated: {last_ping}\n"
+                "Ready to process commands!"
+            )
+        else:
+            message = (
+                "🔴 Bot Status: Inactive\n"
+                "Use /coldstart to activate the bot."
+            )
+
+        await update.message.reply_text(message)
+
 
 
     def _load_categories(self) -> dict:
@@ -2278,10 +2269,19 @@ async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYP
         print(f"Error: {e}")
         await update.message.reply_text("❌ Error adding expense")
 
-async def main():
+
+def main():
     """
-    Main function that uses webhooks with python-telegram-bot.
+    Synchronous main function that uses webhooks with python-telegram-bot.
     """
+    import logging
+    from telegram.ext import (
+        Application, CommandHandler, MessageHandler,
+        CallbackQueryHandler, filters
+    )
+    from telegram import Update
+    from telegram.ext import ContextTypes
+
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.DEBUG
@@ -2304,32 +2304,32 @@ async def main():
         bot = ExpenseBot(token, spreadsheet_id, credentials_info)
         
         # Build the PTB Application
-        application = Application.builder().token(token).build()
+        app = Application.builder().token(token).build()
 
         # Optional: add an error handler
         async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning('Update "%s" caused error "%s"', update, context.error)
-        application.add_error_handler(error_handler)
+        app.add_error_handler(error_handler)
         
         # Register handlers
-        application.add_handler(CommandHandler("start", bot.start))
-        application.add_handler(CommandHandler("coldstart", bot.coldstart))
-        application.add_handler(CommandHandler("status", bot.status))
-        application.add_handler(CommandHandler("delete", bot.delete_last_entry))
-        application.add_handler(CommandHandler("edit", bot.edit_last_entry))
-        application.add_handler(CommandHandler("category", bot.add_category))
-        application.add_handler(CommandHandler("view", bot.view_categories))
-        application.add_handler(CommandHandler("compare", bot.compare_expenses))
-        application.add_handler(CommandHandler("summary", bot.show_summary))
-        application.add_handler(CommandHandler("invest", bot.invest))
-        application.add_handler(CommandHandler("inv_compare", bot.compare_investments))
-        application.add_handler(CommandHandler("loan", bot.loan))
-        application.add_handler(CommandHandler("loan_compare", bot.compare_loans))
-        application.add_handler(CommandHandler("add", bot.add_historical_entry))
+        app.add_handler(CommandHandler("start", bot.start))
+        app.add_handler(CommandHandler("coldstart", bot.coldstart))
+        app.add_handler(CommandHandler("status", bot.status))
+        app.add_handler(CommandHandler("delete", bot.delete_last_entry))
+        app.add_handler(CommandHandler("edit", bot.edit_last_entry))
+        app.add_handler(CommandHandler("category", bot.add_category))
+        app.add_handler(CommandHandler("view", bot.view_categories))
+        app.add_handler(CommandHandler("compare", bot.compare_expenses))
+        app.add_handler(CommandHandler("summary", bot.show_summary))
+        app.add_handler(CommandHandler("invest", bot.invest))
+        app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
+        app.add_handler(CommandHandler("loan", bot.loan))
+        app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
+        app.add_handler(CommandHandler("add", bot.add_historical_entry))
         
         # Message and callback handlers
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
-        application.add_handler(CallbackQueryHandler(bot.button_handler))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
+        app.add_handler(CallbackQueryHandler(bot.button_handler))
 
         logger.info("Starting bot in webhook mode...")
 
@@ -2339,28 +2339,98 @@ async def main():
         webhook_path = "/webhook"
         webhook_url = f"https://{domain}{webhook_path}"
 
-        async with application:
-            await application.initialize()
-            await application.start()
-            await application.bot.set_webhook(url=webhook_url)
-            
-            try:
-                await application.run_webhook(
-                    listen="0.0.0.0",
-                    port=port,
-                    url_path=webhook_path,
-                    webhook_url=webhook_url,
-                    drop_pending_updates=True
-                )
-            finally:
-                # Cleanup when the webhook stops
-                if hasattr(bot, 'ping_service'):
-                    await bot.ping_service.cleanup()
-                await application.stop()
-            
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=webhook_path,
+            webhook_url=webhook_url,
+            drop_pending_updates=True
+        )
     except Exception as e:
         logger.error(f"Error in main: {e}")
         raise
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
+
+
+"""
+def run_dummy_server():
+    
+    Spins up a minimal HTTP server so Render sees an open port.
+    Does nothing except respond '200 OK' to GET requests.
+    
+    port = int(os.environ.get("PORT", 8000))  # Render provides the PORT env var
+    handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("", port), handler) as httpd:
+        print(f"[Dummy Server] Running on port {port}")
+        httpd.serve_forever()
+
+def main():
+    
+    # Basic logging
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.DEBUG
+    )
+    logger = logging.getLogger(__name__)
+
+    # Load environment variables
+    token = os.getenv('TELEGRAM_TOKEN')
+    spreadsheet_id = os.getenv('SPREADSHEET_ID')
+    credentials_base64 = os.getenv('GOOGLE_CREDENTIALS_BASE64')
+    
+    # Decode credentials if needed
+    if credentials_base64:
+        credentials_json = base64.b64decode(credentials_base64)
+        credentials_path = 'google-credentials.json'
+        with open(credentials_path, 'wb') as f:
+            f.write(credentials_json)
+    else:
+        credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
+
+    logger.info("Starting bot initialization...")
+    
+    # Instantiate your ExpenseBot
+    bot = ExpenseBot(token, spreadsheet_id, credentials_path)
+    
+    # Build the PTB Application
+    app = Application.builder().token(token).build()
+
+    # Optional: add an error handler
+    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.warning('Update "%s" caused error "%s"', update, context.error)
+    app.add_error_handler(error_handler)
+    
+    # Register handlers (commands, messages, callback queries, etc.)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message, block=False))
+    app.add_handler(CallbackQueryHandler(bot.button_handler, block=False))
+    app.add_handler(CommandHandler("start", bot.start))
+    app.add_handler(CommandHandler("delete", bot.delete_last_entry))
+    app.add_handler(CommandHandler("edit", bot.edit_last_entry))
+    app.add_handler(CommandHandler("category", bot.add_category))
+    app.add_handler(CommandHandler("view", bot.view_categories))
+    app.add_handler(CommandHandler("compare", bot.compare_expenses))
+    app.add_handler(CommandHandler("summary", bot.show_summary))
+    app.add_handler(CommandHandler("invest", bot.invest))
+    app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
+    app.add_handler(CommandHandler("loan", bot.loan))
+    app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
+    app.add_handler(CommandHandler("add", bot.add_historical_entry))
+
+    logger.info("Starting polling...")
+
+    # Run in blocking (synchronous) mode. PTB will handle its own event loop.
+    #app.run_polling()
+
+################################################################################
+#                  START EVERYTHING IN if __name__ == "__main__"              #
+################################################################################
+
+if __name__ == '__main__':
+    # 1) Start dummy server in background for Render's port
+   # threading.Thread(target=run_dummy_server, daemon=True).start()
+
+    # 2) Call main() synchronously
+    main()
+    """
