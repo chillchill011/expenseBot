@@ -3,8 +3,7 @@ load_dotenv()
 import base64
 import json
 import os
-import aiohttp
-import http.server
+# import http.server
 import asyncio
 import socketserver
 from datetime import datetime, timedelta
@@ -39,50 +38,30 @@ class PingService:
         self.url = url
         self.is_active = False
         self.last_ping = None
-        self._session = None
 
-    async def _ensure_session(self):
-        """Ensure aiohttp session exists"""
-        if self._session is None:
-            self._session = aiohttp.ClientSession()
-        return self._session
-
-    async def activate(self):
+    def activate(self):
         """Activate the service with a single ping."""
         try:
-            session = await self._ensure_session()
-            async with session.get(self.url) as response:
-                if response.status == 200:
-                    self.last_ping = datetime.now()
-                    self.is_active = True
-                    logger.info(f"Ping successful: {response.status}")
-                    return True
-                else:
-                    logger.error(f"Ping failed with status code: {response.status}")
-                    return False
+            response = requests.get(self.url)
+            self.last_ping = datetime.now()
+            self.is_active = True
+            logger.info(f"Ping successful: {response.status_code}")
+            return True
         except Exception as e:
             logger.error(f"Ping failed: {e}")
             return False
 
-    async def check_status(self):
-        """Check current status with a ping."""
-        try:
-            session = await self._ensure_session()
-            async with session.get(self.url) as response:
-                is_active = response.status == 200
-                if is_active:
-                    self.last_ping = datetime.now()
-                    self.is_active = True
-                return is_active
-        except Exception as e:
-            logger.error(f"Status check failed: {e}")
-            return False
+    def deactivate(self):
+        """Deactivate the service."""
+        self.is_active = False
+        logger.info("Service deactivated")
 
-    async def cleanup(self):
-        """Cleanup resources."""
-        if self._session is not None:
-            await self._session.close()
-            self._session = None
+    def get_status(self):
+        """Get current status of the service."""
+        return {
+            'active': self.is_active,
+            'last_ping': self.last_ping.strftime('%Y-%m-%d %H:%M:%S') if self.last_ping else None
+        }
 
 
 class ExpenseBot:
@@ -208,7 +187,7 @@ class ExpenseBot:
     async def coldstart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /coldstart command."""
         if not self.ping_service.is_active:
-            if await self.ping_service.activate():
+            if self.ping_service.activate():
                 await update.message.reply_text(
                     "🟢 Bot Successfully Activated!\n\n"
                     "I'm awake and ready to help you track expenses.\n\n"
@@ -229,25 +208,20 @@ class ExpenseBot:
 
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /status command."""
-        try:
-            is_active = await self.ping_service.check_status()
-            
-            if is_active:
-                last_ping = self.ping_service.last_ping
-                message = (
-                    "🟢 Bot Status: Active\n"
-                    f"Last activated: {last_ping.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    "Ready to process commands!"
-                )
-            else:
-                message = (
-                    "🔴 Bot Status: Inactive\n"
-                    "Use /coldstart to activate the bot."
-                )
-            await update.message.reply_text(message)
-        except Exception as e:
-            logger.error(f"Error checking status: {e}")
-            await update.message.reply_text("❌ Error checking bot status")
+        status = self.ping_service.get_status()
+        if status['active']:
+            last_ping = status['last_ping']
+            message = (
+                "🟢 Bot Status: Active\n"
+                f"Last activated: {last_ping}\n"
+                "Ready to process commands!"
+            )
+        else:
+            message = (
+                "🔴 Bot Status: Inactive\n"
+                "Use /coldstart to activate the bot."
+            )
+        await update.message.reply_text(message)
 
 
     def _load_categories(self) -> dict:
@@ -2279,15 +2253,6 @@ async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Error adding expense")
 
 
-async def cleanup(app):
-    """Cleanup function to be called when the bot stops."""
-    try:
-        bot = app.bot._bot
-        if hasattr(bot, 'ping_service'):
-            await bot.ping_service.cleanup()
-    except Exception as e:
-        logger.error(f"Error during cleanup: {e}")
-
 def main():
     """
     Synchronous main function that uses webhooks with python-telegram-bot.
@@ -2358,13 +2323,12 @@ def main():
         webhook_url = f"https://{domain}{webhook_path}"
 
         app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=webhook_path,
-        webhook_url=webhook_url,
-        drop_pending_updates=True,
-        on_shutdown=cleanup
-)
+            listen="0.0.0.0",
+            port=port,
+            url_path=webhook_path,
+            webhook_url=webhook_url,
+            drop_pending_updates=True
+        )
     except Exception as e:
         logger.error(f"Error in main: {e}")
         raise

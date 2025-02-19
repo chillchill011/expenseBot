@@ -1,0 +1,16 @@
+# render.yaml
+services:
+  - type: web
+    name: expense-tracker-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /webhook  # Add health check
+    startupTimeout: 60        # Give it more time to start
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: SPREADSHEET_ID
+        sync: false
+      - key: GOOGLE_CREDENTIALS_BASE64
+        sync: false
