@@ -1,9 +1,9 @@
 from dotenv import load_dotenv
 load_dotenv()
 import base64
-import json
+# import json
 import os
-import http.server
+# import http.server
 import asyncio
 import socketserver
 from datetime import datetime, timedelta
@@ -34,40 +34,34 @@ logger = logging.getLogger(__name__)
 
 
 class PingService:
-    def __init__(self, url, interval_minutes=10):
+    def __init__(self, url):
         self.url = url
-        self.interval_minutes = interval_minutes
-        self.running = False
+        self.is_active = False
         self.last_ping = None
-        self._thread = None
 
-    def start(self):
-        """Start the ping service in a separate thread."""
-        if not self.running:
-            self.running = True
-            self._thread = threading.Thread(target=self._run, daemon=True)
-            self._thread.start()
-            logger.info(f"Ping service started for {self.url}")
+    def activate(self):
+        """Activate the service with a single ping."""
+        try:
+            response = requests.get(self.url)
+            self.last_ping = datetime.now()
+            self.is_active = True
+            logger.info(f"Ping successful: {response.status_code}")
+            return True
+        except Exception as e:
+            logger.error(f"Ping failed: {e}")
+            return False
 
-    def _run(self):
-        """Run the ping loop."""
-        while self.running:
-            try:
-                response = requests.get(self.url)
-                self.last_ping = datetime.now()
-                logger.info(f"Ping successful: {response.status_code}")
-            except Exception as e:
-                logger.error(f"Ping failed: {e}")
-            
-            # Sleep for the specified interval
-            time.sleep(self.interval_minutes * 60)
+    def deactivate(self):
+        """Deactivate the service."""
+        self.is_active = False
+        logger.info("Service deactivated")
 
-    def stop(self):
-        """Stop the ping service."""
-        self.running = False
-        if self._thread:
-            self._thread.join()
-            logger.info("Ping service stopped")
+    def get_status(self):
+        """Get current status of the service."""
+        return {
+            'active': self.is_active,
+            'last_ping': self.last_ping.strftime('%Y-%m-%d %H:%M:%S') if self.last_ping else None
+        }
 
 
 class ExpenseBot:
@@ -83,10 +77,9 @@ class ExpenseBot:
         # Initialize category cache
         self.categories = self._load_categories()
 
-        # Initialize ping service
-        domain = "expensebot-chatgpt-version.onrender.com"  # Replace with your actual domain
-        self.ping_service = PingService(f"https://{domain}", interval_minutes=30)
-        self.ping_service.start()
+        # Initialize ping service without auto-pinging
+        domain = "expensebot-chatgpt-version.onrender.com"
+        self.ping_service = PingService(f"https://{domain}")
 
         # Start the scheduler in a separate thread
         self._start_scheduler()
@@ -104,10 +97,12 @@ class ExpenseBot:
             "• /compare - Compare expenses\n"
             "• /categories - Add expense to category\n"
             "• /view - View categories with expenses\n"
-            "• /invest - Add investment\n"
+            "• /invest - Add investment (/invest 1000, details)\n"
             "• /inv_compare - View investment summary\n"
-            "• /loan - Add loan data\n"
+            "• /loan - Add loan data (/loan 1000, details)\n"
             "• /loan_compare - View loan summary\n"
+            "• /coldstart - Wake up inactive bot\n"
+            "• /status - Check bot status\n\n"
         )
         await update.message.reply_text(welcome_message)
 
@@ -183,6 +178,46 @@ class ExpenseBot:
                 
         except Exception as e:
             print(f"[Scheduler] Error creating next month's sheet: {e}")
+
+
+    async def coldstart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the /coldstart command."""
+        if not self.ping_service.is_active:
+            if self.ping_service.activate():
+                await update.message.reply_text(
+                    "🟢 Bot Successfully Activated!\n\n"
+                    "I'm awake and ready to help you track expenses.\n\n"
+                    "You can:\n"
+                    "• Add expense: Just type amount and description\n"
+                    "  Example: 50 milk or 100 food, lunch\n\n"
+                    "• Check status anytime with /status\n"
+                    "• View all commands with /start"
+                )
+            else:
+                await update.message.reply_text("❌ Failed to activate bot. Please try again.")
+        else:
+            await update.message.reply_text(
+                "ℹ️ I'm already active and ready!\n\n"
+                "You can start adding expenses:\n"
+                "Example: 50 milk or 100 food, lunch"
+            )
+
+    async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the /status command."""
+        status = self.ping_service.get_status()
+        if status['active']:
+            last_ping = status['last_ping']
+            message = (
+                "🟢 Bot Status: Active\n"
+                f"Last activated: {last_ping}\n"
+                "Ready to process commands!"
+            )
+        else:
+            message = (
+                "🔴 Bot Status: Inactive\n"
+                "Use /coldstart to activate the bot."
+            )
+        await update.message.reply_text(message)
 
 
     def _load_categories(self) -> dict:
@@ -2280,6 +2315,8 @@ def main():
     app.add_handler(CommandHandler("loan", bot.loan))
     app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
     app.add_handler(CommandHandler("add", bot.add_historical_entry))
+    app.add_handler(CommandHandler("coldstart", bot.coldstart))
+    app.add_handler(CommandHandler("status", bot.status))
 
     logger.info("Starting bot in webhook mode...")
 

@@ -1,6 +1,6 @@
 # render.yaml
 services:
-  - type: worker
+  - type: web
     name: expense-tracker-bot
     runtime: python
     buildCommand: pip install -r requirements.txt

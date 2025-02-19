@@ -1,15 +1,17 @@
 from dotenv import load_dotenv
 load_dotenv()
 import base64
-import json
+# import json
 import os
+# import http.server
 import asyncio
-import nest_asyncio
+import socketserver
 from datetime import datetime, timedelta
 import logging
 import threading
 import time
 import schedule
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -23,14 +25,50 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
-nest_asyncio.apply()
-
 # Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+
+class PingService:
+    def __init__(self, url, interval_minutes=10):
+        self.url = url
+        self.interval_minutes = interval_minutes
+        self.running = False
+        self.last_ping = None
+        self._thread = None
+
+    def start(self):
+        """Start the ping service in a separate thread."""
+        if not self.running:
+            self.running = True
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+            logger.info(f"Ping service started for {self.url}")
+
+    def _run(self):
+        """Run the ping loop."""
+        while self.running:
+            try:
+                response = requests.get(self.url)
+                self.last_ping = datetime.now()
+                logger.info(f"Ping successful: {response.status_code}")
+            except Exception as e:
+                logger.error(f"Ping failed: {e}")
+            
+            # Sleep for the specified interval
+            time.sleep(self.interval_minutes * 60)
+
+    def stop(self):
+        """Stop the ping service."""
+        self.running = False
+        if self._thread:
+            self._thread.join()
+            logger.info("Ping service stopped")
+
 
 class ExpenseBot:
     def __init__(self, token: str, spreadsheet_id: str, credentials_path: str):
@@ -44,6 +82,11 @@ class ExpenseBot:
         
         # Initialize category cache
         self.categories = self._load_categories()
+
+        # Initialize ping service
+        domain = "expensebot-chatgpt-version.onrender.com"  # Replace with your actual domain
+        self.ping_service = PingService(f"https://{domain}", interval_minutes=30)
+        self.ping_service.start()
 
         # Start the scheduler in a separate thread
         self._start_scheduler()
@@ -61,9 +104,9 @@ class ExpenseBot:
             "• /compare - Compare expenses\n"
             "• /categories - Add expense to category\n"
             "• /view - View categories with expenses\n"
-            "• /invest - Add investment\n"
+            "• /invest - Add investment (/invest 1000, details)\n"
             "• /inv_compare - View investment summary\n"
-            "• /loan - Add loan data\n"
+            "• /loan - Add loan data (/loan 1000, details)\n"
             "• /loan_compare - View loan summary\n"
         )
         await update.message.reply_text(welcome_message)
@@ -2171,82 +2214,184 @@ async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Error adding expense")
 
 
+def main():
+    """
+    Synchronous main function that uses webhooks with python-telegram-bot.
+    """
+    import logging
+    from telegram.ext import (
+        Application, CommandHandler, MessageHandler,
+        CallbackQueryHandler, filters
+    )
+    from telegram import Update
+    from telegram.ext import ContextTypes
 
-async def main():
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.DEBUG
+    )
+    logger = logging.getLogger(__name__)
+
+    # Load environment variables
+    token = os.getenv('TELEGRAM_TOKEN')
+    spreadsheet_id = os.getenv('SPREADSHEET_ID')
+    credentials_base64 = os.getenv('GOOGLE_CREDENTIALS_BASE64')
+    
+    # Decode credentials if needed
+    if credentials_base64:
+        credentials_json = base64.b64decode(credentials_base64)
+        credentials_path = 'google-credentials.json'
+        with open(credentials_path, 'wb') as f:
+            f.write(credentials_json)
+    else:
+        credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
+
+    logger.info("Starting bot initialization...")
+
+    # Start the ping service
+    domain = "expensebot-chatgpt-version.onrender.com"
+    ping_service = PingService(f"https://{domain}", interval_minutes=30)
+    ping_service.start()
+    logger.info("Ping service started")
+
+    # Instantiate your ExpenseBot
+    bot = ExpenseBot(token, spreadsheet_id, credentials_path)
+    
+    # Build the PTB Application
+    app = Application.builder().token(token).build()
+
+    # Optional: add an error handler
+    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.warning('Update "%s" caused error "%s"', update, context.error)
+    app.add_error_handler(error_handler)
+    
+    # Register handlers (commands, messages, callback queries, etc.)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
+    app.add_handler(CallbackQueryHandler(bot.button_handler))
+    app.add_handler(CommandHandler("start", bot.start))
+    app.add_handler(CommandHandler("delete", bot.delete_last_entry))
+    app.add_handler(CommandHandler("edit", bot.edit_last_entry))
+    app.add_handler(CommandHandler("category", bot.add_category))
+    app.add_handler(CommandHandler("view", bot.view_categories))
+    app.add_handler(CommandHandler("compare", bot.compare_expenses))
+    app.add_handler(CommandHandler("summary", bot.show_summary))
+    app.add_handler(CommandHandler("invest", bot.invest))
+    app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
+    app.add_handler(CommandHandler("loan", bot.loan))
+    app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
+    app.add_handler(CommandHandler("add", bot.add_historical_entry))
+
+    logger.info("Starting bot in webhook mode...")
+
+    # ------------------- WEBHOOK CONFIG ------------------- #
+    # 1) Read the PORT from Render's environment
+    port = int(os.environ.get("PORT", 8000))
+    # 2) Your Render subdomain, e.g. "mybot.onrender.com"
+    domain = "expensebot-chatgpt-version.onrender.com"
+    # 3) The path portion of your webhook URL
+    webhook_path = "/webhook"
+    # Full webhook URL that Telegram will call
+    webhook_url = f"https://{domain}{webhook_path}"
+
     try:
-        logging.basicConfig(
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            level=logging.DEBUG
+        # 4) Start listening in webhook mode
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=webhook_path,
+            webhook_url=webhook_url,
         )
-        logger = logging.getLogger(__name__)
-        
-        # Load configuration
-        token = os.getenv('TELEGRAM_TOKEN')
-        spreadsheet_id = os.getenv('SPREADSHEET_ID')
-        credentials_base64 = os.getenv('GOOGLE_CREDENTIALS_BASE64')
-        
-        if credentials_base64:
-            credentials_json = base64.b64decode(credentials_base64)
-            credentials_path = 'google-credentials.json'
-            with open(credentials_path, 'wb') as f:
-                f.write(credentials_json)
-        else:
-            credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
-
-        logger.info("Starting bot initialization...")
-        
-        # Initialize bot
-        bot = ExpenseBot(token, spreadsheet_id, credentials_path)
-        
-        # Create application
-        app = Application.builder().token(token).build()
-
-        # Add error handler
-        async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            logger.warning('Update "%s" caused error "%s"', update, context.error)
-
-        app.add_error_handler(error_handler)
-        
-        # Add handlers
-        app.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, 
-            bot.handle_message,
-            block=False
-        ))
-        
-        app.add_handler(CallbackQueryHandler(
-            bot.button_handler,
-            block=False
-        ))
-        
-        # Add command handlers
-        app.add_handler(CommandHandler("start", bot.start))
-        app.add_handler(CommandHandler("delete", bot.delete_last_entry))
-        app.add_handler(CommandHandler("edit", bot.edit_last_entry))
-        app.add_handler(CommandHandler("category", bot.add_category))
-        app.add_handler(CommandHandler("view", bot.view_categories))
-        app.add_handler(CommandHandler("compare", bot.compare_expenses))
-        app.add_handler(CommandHandler("summary", bot.show_summary))
-        app.add_handler(CommandHandler("invest", bot.invest))
-        app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
-        app.add_handler(CommandHandler("loan", bot.loan))
-        app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
-        app.add_handler(CommandHandler("add", bot.add_historical_entry))
-
-        logger.info("Starting polling...")
-        
-        # Run with simplified polling setup
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling()
-        
-        # Keep the application running
-        await app.updater.stop()
-        await app.stop()
-        
     except Exception as e:
-        logger.error(f"Error in main: {e}", exc_info=True)
+        logger.error(f"Error starting webhook: {e}")
+        # Stop the ping service if webhook fails
+        ping_service.stop()
         raise
+    finally:
+        # Ensure ping service is stopped when the bot stops
+        ping_service.stop()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
+
+
+
+"""
+def run_dummy_server():
+    
+    Spins up a minimal HTTP server so Render sees an open port.
+    Does nothing except respond '200 OK' to GET requests.
+    
+    port = int(os.environ.get("PORT", 8000))  # Render provides the PORT env var
+    handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("", port), handler) as httpd:
+        print(f"[Dummy Server] Running on port {port}")
+        httpd.serve_forever()
+
+def main():
+    
+    # Basic logging
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.DEBUG
+    )
+    logger = logging.getLogger(__name__)
+
+    # Load environment variables
+    token = os.getenv('TELEGRAM_TOKEN')
+    spreadsheet_id = os.getenv('SPREADSHEET_ID')
+    credentials_base64 = os.getenv('GOOGLE_CREDENTIALS_BASE64')
+    
+    # Decode credentials if needed
+    if credentials_base64:
+        credentials_json = base64.b64decode(credentials_base64)
+        credentials_path = 'google-credentials.json'
+        with open(credentials_path, 'wb') as f:
+            f.write(credentials_json)
+    else:
+        credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
+
+    logger.info("Starting bot initialization...")
+    
+    # Instantiate your ExpenseBot
+    bot = ExpenseBot(token, spreadsheet_id, credentials_path)
+    
+    # Build the PTB Application
+    app = Application.builder().token(token).build()
+
+    # Optional: add an error handler
+    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.warning('Update "%s" caused error "%s"', update, context.error)
+    app.add_error_handler(error_handler)
+    
+    # Register handlers (commands, messages, callback queries, etc.)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message, block=False))
+    app.add_handler(CallbackQueryHandler(bot.button_handler, block=False))
+    app.add_handler(CommandHandler("start", bot.start))
+    app.add_handler(CommandHandler("delete", bot.delete_last_entry))
+    app.add_handler(CommandHandler("edit", bot.edit_last_entry))
+    app.add_handler(CommandHandler("category", bot.add_category))
+    app.add_handler(CommandHandler("view", bot.view_categories))
+    app.add_handler(CommandHandler("compare", bot.compare_expenses))
+    app.add_handler(CommandHandler("summary", bot.show_summary))
+    app.add_handler(CommandHandler("invest", bot.invest))
+    app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
+    app.add_handler(CommandHandler("loan", bot.loan))
+    app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
+    app.add_handler(CommandHandler("add", bot.add_historical_entry))
+
+    logger.info("Starting polling...")
+
+    # Run in blocking (synchronous) mode. PTB will handle its own event loop.
+    #app.run_polling()
+
+################################################################################
+#                  START EVERYTHING IN if __name__ == "__main__"              #
+################################################################################
+
+if __name__ == '__main__':
+    # 1) Start dummy server in background for Render's port
+   # threading.Thread(target=run_dummy_server, daemon=True).start()
+
+    # 2) Call main() synchronously
+    main()
+    """
