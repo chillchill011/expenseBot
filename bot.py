@@ -2278,16 +2278,6 @@ async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYP
         print(f"Error: {e}")
         await update.message.reply_text("❌ Error adding expense")
 
-
-async def cleanup(app):
-    """Cleanup function to be called when the bot stops."""
-    try:
-        bot = app.bot._bot
-        if hasattr(bot, 'ping_service'):
-            await bot.ping_service.cleanup()
-    except Exception as e:
-        logger.error(f"Error during cleanup: {e}")
-
 async def main():
     """
     Main function that uses webhooks with python-telegram-bot.
@@ -2314,35 +2304,32 @@ async def main():
         bot = ExpenseBot(token, spreadsheet_id, credentials_info)
         
         # Build the PTB Application
-        app = Application.builder().token(token).build()
+        application = Application.builder().token(token).build()
 
         # Optional: add an error handler
         async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning('Update "%s" caused error "%s"', update, context.error)
-        app.add_error_handler(error_handler)
+        application.add_error_handler(error_handler)
         
         # Register handlers
-        app.add_handler(CommandHandler("start", bot.start))
-        app.add_handler(CommandHandler("coldstart", bot.coldstart))
-        app.add_handler(CommandHandler("status", bot.status))
-        app.add_handler(CommandHandler("delete", bot.delete_last_entry))
-        app.add_handler(CommandHandler("edit", bot.edit_last_entry))
-        app.add_handler(CommandHandler("category", bot.add_category))
-        app.add_handler(CommandHandler("view", bot.view_categories))
-        app.add_handler(CommandHandler("compare", bot.compare_expenses))
-        app.add_handler(CommandHandler("summary", bot.show_summary))
-        app.add_handler(CommandHandler("invest", bot.invest))
-        app.add_handler(CommandHandler("inv_compare", bot.compare_investments))
-        app.add_handler(CommandHandler("loan", bot.loan))
-        app.add_handler(CommandHandler("loan_compare", bot.compare_loans))
-        app.add_handler(CommandHandler("add", bot.add_historical_entry))
+        application.add_handler(CommandHandler("start", bot.start))
+        application.add_handler(CommandHandler("coldstart", bot.coldstart))
+        application.add_handler(CommandHandler("status", bot.status))
+        application.add_handler(CommandHandler("delete", bot.delete_last_entry))
+        application.add_handler(CommandHandler("edit", bot.edit_last_entry))
+        application.add_handler(CommandHandler("category", bot.add_category))
+        application.add_handler(CommandHandler("view", bot.view_categories))
+        application.add_handler(CommandHandler("compare", bot.compare_expenses))
+        application.add_handler(CommandHandler("summary", bot.show_summary))
+        application.add_handler(CommandHandler("invest", bot.invest))
+        application.add_handler(CommandHandler("inv_compare", bot.compare_investments))
+        application.add_handler(CommandHandler("loan", bot.loan))
+        application.add_handler(CommandHandler("loan_compare", bot.compare_loans))
+        application.add_handler(CommandHandler("add", bot.add_historical_entry))
         
         # Message and callback handlers
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
-        app.add_handler(CallbackQueryHandler(bot.button_handler))
-
-        # Register shutdown handler
-        app.add_shutdown_handler(cleanup)
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
+        application.add_handler(CallbackQueryHandler(bot.button_handler))
 
         logger.info("Starting bot in webhook mode...")
 
@@ -2352,13 +2339,25 @@ async def main():
         webhook_path = "/webhook"
         webhook_url = f"https://{domain}{webhook_path}"
 
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=webhook_path,
-            webhook_url=webhook_url,
-            drop_pending_updates=True
-        )
+        async with application:
+            await application.initialize()
+            await application.start()
+            await application.bot.set_webhook(url=webhook_url)
+            
+            try:
+                await application.run_webhook(
+                    listen="0.0.0.0",
+                    port=port,
+                    url_path=webhook_path,
+                    webhook_url=webhook_url,
+                    drop_pending_updates=True
+                )
+            finally:
+                # Cleanup when the webhook stops
+                if hasattr(bot, 'ping_service'):
+                    await bot.ping_service.cleanup()
+                await application.stop()
+            
     except Exception as e:
         logger.error(f"Error in main: {e}")
         raise
