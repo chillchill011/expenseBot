@@ -2288,18 +2288,10 @@ async def cleanup(app):
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
 
-def main():
+async def main():
     """
-    Synchronous main function that uses webhooks with python-telegram-bot.
+    Main function that uses webhooks with python-telegram-bot.
     """
-    import logging
-    from telegram.ext import (
-        Application, CommandHandler, MessageHandler,
-        CallbackQueryHandler, filters
-    )
-    from telegram import Update
-    from telegram.ext import ContextTypes
-
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.DEBUG
@@ -2349,6 +2341,9 @@ def main():
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
         app.add_handler(CallbackQueryHandler(bot.button_handler))
 
+        # Register shutdown handler
+        app.add_shutdown_handler(cleanup)
+
         logger.info("Starting bot in webhook mode...")
 
         # Webhook configuration
@@ -2358,20 +2353,18 @@ def main():
         webhook_url = f"https://{domain}{webhook_path}"
 
         app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=webhook_path,
-        webhook_url=webhook_url,
-        drop_pending_updates=True,
-        on_shutdown=cleanup
-)
+            listen="0.0.0.0",
+            port=port,
+            url_path=webhook_path,
+            webhook_url=webhook_url,
+            drop_pending_updates=True
+        )
     except Exception as e:
         logger.error(f"Error in main: {e}")
         raise
 
 if __name__ == '__main__':
-    main()
-
+    asyncio.run(main())
 
 """
 def run_dummy_server():
