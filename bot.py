@@ -48,19 +48,9 @@ class ExpenseBot:
         self.sheets_service = sheets_service_instance # Assign the passed instance
         self.credentials = None # Credentials will be set in setup_bot_application
 
-        # If sheets_service is not yet available (e.g., during initial instantiation),
-        # categories will be loaded later.
-        if self.sheets_service:
-            logger.info("Sheets service available in ExpenseBot __init__. Attempting to load categories.")
-            self.categories = self._load_categories()
-            logger.info("Categories loaded.")
-        else:
-            self.categories = {} # Initialize empty, will be populated later
-            logger.warning("Sheets service not yet available in ExpenseBot __init__. Categories will be loaded later.")
-
-        logger.info("Starting background scheduler for monthly sheet creation.")
-        self._start_scheduler()
-        logger.info("ExpenseBot initialization complete (synchronous part).")
+        # Initialize categories to empty. They will be loaded later in setup_bot_application.
+        self.categories = {} 
+        logger.info("ExpenseBot initialization complete (synchronous part). Categories and scheduler will be set up asynchronously.")
 
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2107,13 +2097,18 @@ async def setup_bot_application():
             logger.error("Google Sheets service could not be built. Bot functionality requiring sheets will be limited.")
 
     # 3. Instantiate ExpenseBot with the sheets_service
+    # Pass credentials_json_b64 as well, in case it's needed for re-auth or other purposes later
     bot_instance_global = ExpenseBot(spreadsheet_id, google_credentials_json_b64, sheets_service_instance=sheets_service)
     
-    # If sheets_service was successfully built, load categories now
-    if sheets_service and not bot_instance_global.categories: # Check if categories are already loaded (e.g., if sheets_service was init with it)
-        logger.info("Sheets service available and categories not loaded. Loading categories now.")
+    # 4. If sheets_service was successfully built, load categories and start scheduler now
+    if sheets_service:
+        logger.info("Sheets service available. Loading categories and starting scheduler.")
         bot_instance_global.categories = bot_instance_global._load_categories()
         logger.info(f"Categories loaded in async setup: {len(bot_instance_global.categories)} items.")
+        bot_instance_global._start_scheduler()
+        logger.info("Scheduler started in async setup.")
+    else:
+        logger.warning("Sheets service not available. Skipping category load and scheduler start.")
 
 
     telegram_app_instance = Application.builder().token(bot_token).build()
