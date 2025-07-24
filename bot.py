@@ -53,10 +53,13 @@ class ExpenseBot:
             logger.error(f"Error initializing credentials: {e}", exc_info=True)
             raise # Still raise if credentials fail, as bot cannot function without them.
 
+        logger.info("Building sheets service.") # New log
         self.sheets_service = build('sheets', 'v4', credentials=self.credentials)
+        logger.info("Sheets service built. Attempting to load categories.") # New log
         self.categories = self._load_categories() # This is the line we're focusing on
-        logger.info("Starting background scheduler for monthly sheet creation.") # Added this line
+        logger.info("Categories loaded. Starting background scheduler for monthly sheet creation.") # Added this line
         self._start_scheduler()
+        logger.info("ExpenseBot initialization complete.") # New log
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /start command."""
@@ -130,15 +133,18 @@ class ExpenseBot:
     #<editor-fold desc="Paste all your existing ExpenseBot methods here">
     def _load_categories(self) -> dict:
         """Load categories from master sheet."""
-        logger.info("Attempting to load categories from Master sheet.")
+        logger.info("Inside _load_categories method.") # New log
         try:
+            logger.info(f"Fetching data from spreadsheetId: {self.spreadsheet_id}, range: Master!A2:B") # New log
             result = self.sheets_service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
                 range='Master!A2:B'
             ).execute()
             
             categories = {}
-            for row in result.get('values', []):
+            values = result.get('values', []) # Ensure values is always a list
+            logger.info(f"Raw values from Master sheet: {values[:5]}...") # Log first few rows
+            for row in values:
                 if len(row) >= 2:
                     expense, category = row
                     categories[expense.lower()] = category
