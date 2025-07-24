@@ -22,6 +22,7 @@ from telegram.ext import (
 )
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError # Import HttpError for specific handling
 
 # Configure logging
 logging.basicConfig(
@@ -41,6 +42,7 @@ class ExpenseBot:
         """Initialize bot with necessary credentials and configurations."""
         self.spreadsheet_id = spreadsheet_id
         self.credentials_json_b64 = credentials_json_b64
+        self.sheets_service = None # Initialize to None
 
         try:
             credentials_json = base64.b64decode(self.credentials_json_b64).decode('utf-8')
@@ -54,12 +56,30 @@ class ExpenseBot:
             raise # Still raise if credentials fail, as bot cannot function without them.
 
         logger.info("Building sheets service.") # New log
-        self.sheets_service = build('sheets', 'v4', credentials=self.credentials)
-        logger.info("Sheets service built. Attempting to load categories.") # New log
-        self.categories = self._load_categories() # This is the line we're focusing on
-        logger.info("Categories loaded. Starting background scheduler for monthly sheet creation.") # Added this line
+        try:
+            self.sheets_service = build('sheets', 'v4', credentials=self.credentials)
+            logger.info("Sheets service built successfully.") # New log
+        except HttpError as e:
+            logger.error(f"HTTP Error building Google Sheets service: {e.resp.status} - {e.content.decode()}", exc_info=True)
+            logger.error("Google Sheets service could not be built. Bot functionality requiring sheets will be limited.")
+            # Do not re-raise, allow the rest of the bot to try and start.
+        except Exception as e:
+            logger.error(f"Generic error building Google Sheets service: {e}", exc_info=True)
+            logger.error("Google Sheets service could not be built. Bot functionality requiring sheets will be limited.")
+            # Do not re-raise.
+
+        # Only attempt to load categories if sheets_service was successfully built
+        if self.sheets_service:
+            logger.info("Attempting to load categories.")
+            self.categories = self._load_categories()
+            logger.info("Categories loaded.")
+        else:
+            self.categories = {} # Set categories to empty if service failed to build
+            logger.warning("Google Sheets service not available. Categories not loaded.")
+
+        logger.info("Starting background scheduler for monthly sheet creation.")
         self._start_scheduler()
-        logger.info("ExpenseBot initialization complete.") # New log
+        logger.info("ExpenseBot initialization complete.")
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /start command."""
@@ -85,8 +105,12 @@ class ExpenseBot:
     def _start_scheduler(self):
         """Start the scheduler in a separate thread."""
         def run_scheduler():
-            schedule.every().day.at("01:00").do(self._check_and_create_sheet)
-            logger.info("Scheduler for monthly sheet creation is set up.")
+            # Only schedule if sheets_service is available
+            if self.sheets_service:
+                schedule.every().day.at("01:00").do(self._check_and_create_sheet)
+                logger.info("Scheduler for monthly sheet creation is set up.")
+            else:
+                logger.warning("Sheets service not available, skipping scheduler setup.")
             while True:
                 schedule.run_pending()
                 time.sleep(60)
@@ -96,6 +120,9 @@ class ExpenseBot:
 
     def _check_and_create_sheet(self):
         """Check if it's the first day of the month and create a new sheet if needed."""
+        if not self.sheets_service:
+            logger.warning("Cannot check/create sheet: Google Sheets service not available.")
+            return
         if datetime.now().day == 1:
             logger.info("First day of the month detected. Creating new sheet.")
             self._create_next_month_sheet()
@@ -104,6 +131,9 @@ class ExpenseBot:
 
     def _create_next_month_sheet(self):
         """Create a sheet for the next month."""
+        if not self.sheets_service:
+            logger.warning("Cannot create next month's sheet: Google Sheets service not available.")
+            return
         try:
             now = datetime.now()
             # Correctly calculate next month
@@ -114,7 +144,7 @@ class ExpenseBot:
             logger.info(f"Attempting to create sheet: {sheet_name}")
             self._ensure_monthly_sheet_exists(sheet_name)
         except Exception as e:
-            logger.error(f"Error creating next month's sheet: {e}")
+            logger.error(f"Error creating next month's sheet: {e}", exc_info=True)
 
     async def coldstart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /coldstart or /status command."""
@@ -124,26 +154,24 @@ class ExpenseBot:
             "You can start logging expenses or use any command."
         )
 
-    # --- All your other ExpenseBot methods remain unchanged ---
-    # (_load_categories, add_historical_entry, loan, compare_loans, etc.)
-    # I am omitting them here for brevity but you should KEEP them in your file.
-    # Make sure to copy all methods from your original file from `_load_categories`
-    # down to `_add_category_mapping`.
-
     #<editor-fold desc="Paste all your existing ExpenseBot methods here">
     def _load_categories(self) -> dict:
         """Load categories from master sheet."""
-        logger.info("Inside _load_categories method.") # New log
+        if not self.sheets_service:
+            logger.warning("Cannot load categories: Google Sheets service not available.")
+            return {}
+            
+        logger.info("Inside _load_categories method.")
         try:
-            logger.info(f"Fetching data from spreadsheetId: {self.spreadsheet_id}, range: Master!A2:B") # New log
+            logger.info(f"Fetching data from spreadsheetId: {self.spreadsheet_id}, range: Master!A2:B")
             result = self.sheets_service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
                 range='Master!A2:B'
             ).execute()
             
             categories = {}
-            values = result.get('values', []) # Ensure values is always a list
-            logger.info(f"Raw values from Master sheet: {values[:5]}...") # Log first few rows
+            values = result.get('values', [])
+            logger.info(f"Raw values from Master sheet: {values[:5]}...")
             for row in values:
                 if len(row) >= 2:
                     expense, category = row
@@ -154,8 +182,6 @@ class ExpenseBot:
 
         except Exception as e:
             logger.error(f"Error loading categories from Google Sheet: {e}", exc_info=True)
-            # Do not re-raise; allow the bot to start even if categories aren't loaded initially.
-            # Commands relying on categories might fail later, but the app won't crash on startup.
             return {} # Return empty dict if loading fails
 
     async def add_historical_entry(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -163,6 +189,9 @@ class ExpenseBot:
         Handle /add command to process a replied message as a historical entry.
         Important: Uses the original message sender's username, not the command issuer's.
         """
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot add historical entry.")
+            return
         try:
             # Check if the command is replying to a message
             if not update.message.reply_to_message:
@@ -403,6 +432,9 @@ class ExpenseBot:
 
     async def loan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle loan command"""
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot process loan.")
+            return
         try:
             if not context.args or len(context.args) < 1:
                 await update.message.reply_text(
@@ -451,6 +483,9 @@ class ExpenseBot:
 
     async def compare_loans(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Compare loan repayments"""
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot compare loans.")
+            return
         try:
             keyboard = [
                 [InlineKeyboardButton("Current Month", callback_data="loan_compare_month")],
@@ -468,6 +503,9 @@ class ExpenseBot:
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle all messages"""
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot process messages.")
+            return
         try:
             print(f"Received message in chat type: {update.message.chat.type}")  # Debug print
             text = update.message.text.strip()
@@ -488,6 +526,9 @@ class ExpenseBot:
 
     async def invest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle investment command"""
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot process investment.")
+            return
         try:
             if not context.args or len(context.args) < 1:
                 await update.message.reply_text(
@@ -536,6 +577,9 @@ class ExpenseBot:
 
     async def compare_investments(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Compare investments across years"""
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot compare investments.")
+            return
         try:
             keyboard = [
                 [InlineKeyboardButton("Current Month", callback_data="inv_compare_month")],
@@ -553,6 +597,9 @@ class ExpenseBot:
 
     async def compare_expenses(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Compare expenses across different time periods"""
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot compare expenses.")
+            return
         try:
             keyboard = [
                 [InlineKeyboardButton("Current vs Last Month", callback_data="compare_last_1")],
@@ -570,6 +617,9 @@ class ExpenseBot:
 
     async def show_summary(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show expense summary for different periods"""
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot show summary.")
+            return
         try:
             keyboard = [
                 [InlineKeyboardButton("Current Month", callback_data="summary_current")],
@@ -589,6 +639,9 @@ class ExpenseBot:
 
     def _get_month_data(self, year_month: str) -> dict:
         """Get expense data for a specific month"""
+        if not self.sheets_service:
+            logger.warning("Cannot get month data: Google Sheets service not available.")
+            return {'total': 0, 'users': {}}
         try:
             print(f"Getting data for month: {year_month}")  # Debug print
             result = self.sheets_service.spreadsheets().values().get(
@@ -633,6 +686,9 @@ class ExpenseBot:
         return relative_month.strftime('%Y-%m')
 
     async def view_categories(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot view categories.")
+            return
         try:
             current_month = datetime.now().strftime('%Y-%m')
             result = self.sheets_service.spreadsheets().values().get(
@@ -700,6 +756,9 @@ class ExpenseBot:
 
     async def add_category(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Add new item to category"""
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot add category.")
+            return
         try:
             # Check if item name is provided
             if not context.args:
@@ -746,6 +805,9 @@ class ExpenseBot:
             await update.message.reply_text("❌ Error processing category addition.")
 
     async def edit_last_entry(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot edit entry.")
+            return
         try:
             current_month = datetime.now().strftime('%Y-%m')
 
@@ -829,6 +891,9 @@ class ExpenseBot:
 
     async def delete_last_entry(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Delete the last expense entry"""
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot delete entry.")
+            return
         try:
             current_month = datetime.now().strftime('%Y-%m')
 
@@ -868,6 +933,9 @@ class ExpenseBot:
 
     def _get_sheet_id(self, sheet_name: str) -> int:
         """Get sheet ID by name."""
+        if not self.sheets_service:
+            logger.warning("Cannot get sheet ID: Google Sheets service not available.")
+            return None
         sheets = self.sheets_service.spreadsheets().get(
             spreadsheetId=self.spreadsheet_id
         ).execute()['sheets']
@@ -879,6 +947,9 @@ class ExpenseBot:
 
     def _ensure_investment_sheets_exist(self):
         """Ensure investment sheets exist with proper headers"""
+        if not self.sheets_service:
+            logger.warning("Cannot ensure investment sheets exist: Google Sheets service not available.")
+            return False
         try:
             current_year = datetime.now().year
             year_sheet = f"{current_year} Overview"
@@ -934,6 +1005,9 @@ class ExpenseBot:
             sheet_name (str, optional): Specific month sheet to create (format: YYYY-MM).
                                     If None, creates sheet for current month.
         """
+        if not self.sheets_service:
+            logger.warning("Cannot ensure monthly sheet exists: Google Sheets service not available.")
+            return False
         try:
             # If no sheet_name provided, use current month
             if sheet_name is None:
@@ -988,6 +1062,9 @@ class ExpenseBot:
 
     async def handle_expense(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle expense messages."""
+        if not self.sheets_service:
+            await update.message.reply_text("❌ Google Sheets service is not available. Cannot handle expense.")
+            return
         try:
             text = update.message.text
 
@@ -1084,6 +1161,9 @@ class ExpenseBot:
         return None
 
     async def _add_expense(self, amount: float, description: str, category: str, user: str, details: str = ""):
+        if not self.sheets_service:
+            logger.warning("Cannot add expense: Google Sheets service not available.")
+            return False
         try:
             print(f"Adding expense: Amount={amount}, Description={description}, Category={category}")
             current_month = datetime.now().strftime('%Y-%m')
@@ -1117,6 +1197,9 @@ class ExpenseBot:
 
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger = logging.getLogger(__name__)
+        if not self.sheets_service:
+            await update.callback_query.edit_message_text("❌ Google Sheets service is not available. Cannot process button action.")
+            return
         try:
             """Handle inline keyboard button presses."""
             query = update.callback_query
@@ -2017,6 +2100,9 @@ class ExpenseBot:
 
     def _add_category_mapping(self, description: str, category: str):
         """Add new category mapping to master sheet."""
+        if not self.sheets_service:
+            logger.warning("Cannot add category mapping: Google Sheets service not available.")
+            return
         values = [[description.lower(), category]]
         self.sheets_service.spreadsheets().values().append(
             spreadsheetId=self.spreadsheet_id,
