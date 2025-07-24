@@ -50,11 +50,12 @@ class ExpenseBot:
             )
             logger.info("Google Sheets authentication successful.")
         except Exception as e:
-            logger.error(f"Error initializing credentials: {e}")
-            raise
+            logger.error(f"Error initializing credentials: {e}", exc_info=True)
+            raise # Still raise if credentials fail, as bot cannot function without them.
 
         self.sheets_service = build('sheets', 'v4', credentials=self.credentials)
-        self.categories = self._load_categories()
+        self.categories = self._load_categories() # This is the line we're focusing on
+        logger.info("Starting background scheduler for monthly sheet creation.") # Added this line
         self._start_scheduler()
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -129,29 +130,27 @@ class ExpenseBot:
     #<editor-fold desc="Paste all your existing ExpenseBot methods here">
     def _load_categories(self) -> dict:
         """Load categories from master sheet."""
+        logger.info("Attempting to load categories from Master sheet.")
         try:
-            print(f"Attempting to access sheet with ID: {self.spreadsheet_id}")
             result = self.sheets_service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
                 range='Master!A2:B'
             ).execute()
-            print("Successfully accessed sheet")
-            print(f"Retrieved data: {result}")
-
+            
             categories = {}
             for row in result.get('values', []):
                 if len(row) >= 2:
                     expense, category = row
                     categories[expense.lower()] = category
-
-            print(f"Processed categories: {categories}")
+            
+            logger.info(f"Successfully loaded {len(categories)} categories.")
             return categories
 
         except Exception as e:
-            print(f"Error accessing sheet: {e}")
-            print(f"Using spreadsheet ID: {self.spreadsheet_id}")
-            print(f"Service account email: {self.credentials.service_account_email}")
-            raise
+            logger.error(f"Error loading categories from Google Sheet: {e}", exc_info=True)
+            # Do not re-raise; allow the bot to start even if categories aren't loaded initially.
+            # Commands relying on categories might fail later, but the app won't crash on startup.
+            return {} # Return empty dict if loading fails
 
     async def add_historical_entry(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -2105,4 +2104,3 @@ def _run_async_setup():
 # This ensures the Flask app is ready before trying to initialize the bot/webhook
 # and avoids asyncio loop conflicts during module import.
 threading.Thread(target=_run_async_setup, daemon=True).start()
-
