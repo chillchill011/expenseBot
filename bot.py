@@ -38,48 +38,30 @@ bot_instance_global = None
 
 
 class ExpenseBot:
-    def __init__(self, spreadsheet_id: str, credentials_json_b64: str):
-        """Initialize bot with necessary credentials and configurations."""
+    def __init__(self, spreadsheet_id: str, credentials_json_b64: str, sheets_service_instance=None):
+        """
+        Initialize bot with necessary configurations.
+        sheets_service_instance is passed after being built asynchronously.
+        """
         self.spreadsheet_id = spreadsheet_id
-        self.credentials_json_b64 = credentials_json_b64
-        self.sheets_service = None # Initialize to None
+        self.credentials_json_b64 = credentials_json_b64 # Keep for potential re-auth if needed
+        self.sheets_service = sheets_service_instance # Assign the passed instance
+        self.credentials = None # Credentials will be set in setup_bot_application
 
-        try:
-            credentials_json = base64.b64decode(self.credentials_json_b64).decode('utf-8')
-            self.credentials = service_account.Credentials.from_service_account_info(
-                json.loads(credentials_json),
-                scopes=['https://www.googleapis.com/auth/spreadsheets']
-            )
-            logger.info("Google Sheets authentication successful.")
-        except Exception as e:
-            logger.error(f"Error initializing credentials: {e}", exc_info=True)
-            raise # Still raise if credentials fail, as bot cannot function without them.
-
-        logger.info("Building sheets service.") # New log
-        try:
-            self.sheets_service = build('sheets', 'v4', credentials=self.credentials)
-            logger.info("Sheets service built successfully.") # New log
-        except HttpError as e:
-            logger.error(f"HTTP Error building Google Sheets service: {e.resp.status} - {e.content.decode()}", exc_info=True)
-            logger.error("Google Sheets service could not be built. Bot functionality requiring sheets will be limited.")
-            # Do not re-raise, allow the rest of the bot to try and start.
-        except Exception as e:
-            logger.error(f"Generic error building Google Sheets service: {e}", exc_info=True)
-            logger.error("Google Sheets service could not be built. Bot functionality requiring sheets will be limited.")
-            # Do not re-raise.
-
-        # Only attempt to load categories if sheets_service was successfully built
+        # If sheets_service is not yet available (e.g., during initial instantiation),
+        # categories will be loaded later.
         if self.sheets_service:
-            logger.info("Attempting to load categories.")
+            logger.info("Sheets service available in ExpenseBot __init__. Attempting to load categories.")
             self.categories = self._load_categories()
             logger.info("Categories loaded.")
         else:
-            self.categories = {} # Set categories to empty if service failed to build
-            logger.warning("Google Sheets service not available. Categories not loaded.")
+            self.categories = {} # Initialize empty, will be populated later
+            logger.warning("Sheets service not yet available in ExpenseBot __init__. Categories will be loaded later.")
 
         logger.info("Starting background scheduler for monthly sheet creation.")
         self._start_scheduler()
-        logger.info("ExpenseBot initialization complete.")
+        logger.info("ExpenseBot initialization complete (synchronous part).")
+
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /start command."""
@@ -105,12 +87,10 @@ class ExpenseBot:
     def _start_scheduler(self):
         """Start the scheduler in a separate thread."""
         def run_scheduler():
-            # Only schedule if sheets_service is available
-            if self.sheets_service:
-                schedule.every().day.at("01:00").do(self._check_and_create_sheet)
-                logger.info("Scheduler for monthly sheet creation is set up.")
-            else:
-                logger.warning("Sheets service not available, skipping scheduler setup.")
+            # The scheduler runs continuously, but the actual sheet operations
+            # will check for sheets_service availability.
+            schedule.every().day.at("01:00").do(self._check_and_create_sheet)
+            logger.info("Scheduler for monthly sheet creation is set up.")
             while True:
                 schedule.run_pending()
                 time.sleep(60)
@@ -149,10 +129,12 @@ class ExpenseBot:
     async def coldstart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /coldstart or /status command."""
         logger.info("coldstart/status command received.")
-        await update.message.reply_text(
-            "🟢 Bot is awake and ready!\n\n"
-            "You can start logging expenses or use any command."
-        )
+        status_msg = "🟢 Bot is awake and ready!\n\n"
+        if not self.sheets_service:
+            status_msg += "⚠️ Google Sheets service is not connected. Some features may not work."
+        else:
+            status_msg += "✅ Google Sheets service is connected."
+        await update.message.reply_text(status_msg)
 
     #<editor-fold desc="Paste all your existing ExpenseBot methods here">
     def _load_categories(self) -> dict:
@@ -1221,7 +1203,6 @@ class ExpenseBot:
                     month_year = entry_date.split('/')[1:]  # Get MM/YYYY
                     sheet_name = f"{month_year[1]}-{month_year[0]}"
 
-                    # Ensure sheet exists
                     self._ensure_monthly_sheet_exists(sheet_name)
 
                     # Add expense with original user
@@ -1272,7 +1253,6 @@ class ExpenseBot:
                     year = entry_date.split('/')[-1]
                     year_sheet = f"{year} Overview"
 
-                    # Ensure investment sheet exists
                     self._ensure_investment_sheets_exist()
 
                     # Add investment with original user
@@ -1315,7 +1295,6 @@ class ExpenseBot:
                     original_user = parts[4]   # Changed from parts[5]
                     description = '_'.join(parts[5:]) if len(parts) > 5 else ""
 
-                    # Add loan with original user
                     values = [[
                         entry_date,
                         amount,
@@ -1561,7 +1540,6 @@ class ExpenseBot:
                         compare_type = query.data.split('_')[2]
                         message = "📊 Loan Repayment Summary\n\n"
 
-                        # Get all loan repayment data
                         result = self.sheets_service.spreadsheets().values().get(
                             spreadsheetId=self.spreadsheet_id,
                             range='Loan Repayment!A:E'
@@ -1570,12 +1548,10 @@ class ExpenseBot:
                         values = result.get('values', [])[1:]  # Skip header
 
                         if compare_type == 'month':
-                            # Get current month and year
                             current_month = datetime.now().strftime('%m')
                             current_year = datetime.now().strftime('%Y')
-                            print(f"Current month: {current_month}, Current year: {current_year}")  # Debug log
+                            print(f"Current month: {current_month}, Current year: {current_year}")
 
-                            # Debug: Print first few dates to check format
                             print("Checking first few dates in sheet:")
                             for row in values[:5]:
                                 print(f"Date: {row[0]}, Month part: {row[0].split('/')[1]}, Year part: {row[0].split('/')[2]}")
@@ -1598,10 +1574,9 @@ class ExpenseBot:
                                 message += f"Current Month Total: ₹{total:.2f}\n"
                                 message += f"Number of Payments: {len(current_month_payments)}\n\n"
 
-                                # Category breakdown
                                 category_totals = {}
                                 for row in current_month_payments:
-                                    category = row[3]  # Loan category
+                                    category = row[3]
                                     amount = float(row[1])
                                     category_totals[category] = category_totals.get(category, 0) + amount
 
@@ -1613,7 +1588,6 @@ class ExpenseBot:
                                 message += "No loan payments this month"
 
                         elif compare_type == 'year':
-                            # Rest of the year comparison code remains the same
                             current_year = datetime.now().strftime('%Y')
                             year_payments = [
                                 row for row in values
@@ -1625,7 +1599,6 @@ class ExpenseBot:
                                 message += f"Year {current_year} Total: ₹{total:.2f}\n"
                                 message += f"Number of Payments: {len(year_payments)}\n\n"
 
-                                # Category breakdown
                                 category_totals = {}
                                 for row in year_payments:
                                     category = row[3]
@@ -1640,7 +1613,6 @@ class ExpenseBot:
                                 message += "No loan payments this year"
 
                         elif compare_type == 'all':
-                            # Rest of the all-time comparison code remains the same
                             if values:
                                 total_all_time = sum(float(row[1]) for row in values)
                                 message += f"📊 All Time Summary\n"
@@ -1648,7 +1620,6 @@ class ExpenseBot:
                                 message += f"Number of Payments: {len(values)}\n"
                                 message += "──────────────\n\n"
 
-                                # Group by years
                                 year_data = {}
                                 for row in values:
                                     year = row[0].split('/')[2]
@@ -1656,7 +1627,6 @@ class ExpenseBot:
                                         year_data[year] = []
                                     year_data[year].append(row)
 
-                                # Process each year
                                 for year in sorted(year_data.keys(), reverse=True):
                                     year_payments = year_data[year]
                                     year_total = sum(float(row[1]) for row in year_payments)
@@ -1665,10 +1635,9 @@ class ExpenseBot:
                                     message += f"Total: ₹{year_total:.2f}\n"
                                     message += f"Payments: {len(year_payments)}\n"
 
-                                    # Category breakdown for this year
                                     category_totals = {}
                                     for row in year_payments:
-                                        category = row[3]  # Loan category
+                                        category = row[3]
                                         amount = float(row[1])
                                         category_totals[category] = category_totals.get(category, 0) + amount
 
@@ -1694,7 +1663,6 @@ class ExpenseBot:
 
                 else:
                     try:
-                        # Handle loan payment entry
                         parts = query.data.split('_')
                         amount = float(parts[1])
                         category = parts[2]
@@ -1702,11 +1670,11 @@ class ExpenseBot:
 
                         date = datetime.now().strftime('%Y/%m/%d')
                         values = [[
-                            date,           # Date
-                            amount,         # Amount
-                            query.from_user.username or "Unknown",  # User
-                            category,       # Loan category
-                            description,    # Description
+                            date,
+                            amount,
+                            query.from_user.username or "Unknown",
+                            category,
+                            description,
                         ]]
 
                         self.sheets_service.spreadsheets().values().append(
@@ -1736,22 +1704,17 @@ class ExpenseBot:
                     current_month = datetime.now().strftime('%Y-%m')
                     last_month = self._get_relative_month(1)
 
-                    # Get data
                     current_data = self._get_month_data(current_month)
                     last_data = self._get_month_data(last_month)
 
-                    # Initialize message
                     message = "📊 Expense Comparison\n\n"
 
-                    # Add current month data
                     message += f"Current Month ({current_month})\n"
                     message += f"Total: ₹{current_data['total']:.2f}\n\n"
 
-                    # Add last month data
                     message += f"Last Month ({last_month})\n"
                     message += f"Total: ₹{last_data['total']:.2f}\n\n"
 
-                    # Calculate change
                     if last_data['total'] > 0:
                         diff = current_data['total'] - last_data['total']
                         pct = (diff / last_data['total']) * 100
@@ -1803,7 +1766,7 @@ class ExpenseBot:
                     for i in range(3):
                         month = self._get_relative_month(i)
                         data = self._get_month_data(month)
-                        if data['total'] > 0: # Only add if there are expenses
+                        if data['total'] > 0:
                             message += f"{month}: ₹{data['total']:.2f}\n"
                             total += data['total']
                     message += f"\nTotal: ₹{total:.2f}"
@@ -1829,29 +1792,25 @@ class ExpenseBot:
 
             elif query.data.startswith('invest_'):
                         try:
-                            # Parse callback data
                             parts = query.data.split('_')
                             amount = float(parts[1])
                             category = parts[2]
                             description = '_'.join(parts[3:]) if len(parts) > 3 else ""
 
-                            # Get current year sheet
                             current_year = datetime.now().year
                             year_sheet = f"{current_year} Overview"
 
-                            # Ensure sheet exists
                             self._ensure_investment_sheets_exist()
 
-                            # Add investment
                             date = datetime.now().strftime('%Y/%m/%d')
                             values = [[
-                                date,           # Date
-                                amount,         # Amount
-                                category,       # Category
-                                query.from_user.username or "Unknown",  # User
-                                description,    # Description
-                                "",            # Returns (empty initially)
-                                ""             # Return Date (empty initially)
+                                date,
+                                amount,
+                                category,
+                                query.from_user.username or "Unknown",
+                                description,
+                                "",
+                                ""
                             ]]
 
                             self.sheets_service.spreadsheets().values().append(
@@ -1862,7 +1821,6 @@ class ExpenseBot:
                                 body={'values': values}
                             ).execute()
 
-                            # Create success message
                             msg = f"✅ Investment Added:\n"
                             msg += f"Amount: ₹{amount:.2f}\n"
                             msg += f"Category: {category}"
@@ -1883,8 +1841,7 @@ class ExpenseBot:
 
                     if compare_type == 'month':
                         try:
-                            # Current month comparison
-                            current_month = datetime.now().strftime('%m')  # Get current month
+                            current_month = datetime.now().strftime('%m')
                             result = self.sheets_service.spreadsheets().values().get(
                                 spreadsheetId=self.spreadsheet_id,
                                 range=f'{current_year} Overview!A:G'
@@ -1894,8 +1851,7 @@ class ExpenseBot:
                             if len(values) <= 1:
                                 message += "No investments found for current month"
                             else:
-                                values = values[1:]  # Skip header
-                                # Filter current month investments
+                                values = values[1:]
                                 current_month_investments = []
                                 for row in values:
                                     try:
@@ -1909,15 +1865,13 @@ class ExpenseBot:
                                 if not current_month_investments:
                                     message += "No investments found for current month"
                                 else:
-                                    # Calculate total
                                     total = sum(float(row[1]) for row in current_month_investments if len(row) > 1 and row[1])
                                     message += f"Current Month Total: ₹{total:.2f}\n"
                                     message += f"Number of Investments: {len(current_month_investments)}\n\n"
 
-                                    # Category-wise breakdown
                                     category_totals = {}
                                     for row in current_month_investments:
-                                        if len(row) >= 3:  # Ensure category exists
+                                        if len(row) >= 3:
                                             category = row[2]
                                             try:
                                                 amount = float(row[1]) if row[1] else 0
@@ -1946,7 +1900,7 @@ class ExpenseBot:
                             if len(values) <= 1:
                                 message += f"No investments found for {current_year}"
                             else:
-                                values = values[1:]  # Skip header
+                                values = values[1:]
                                 total_invested = 0
                                 total_returns = 0
                                 category_totals = {}
@@ -1956,7 +1910,6 @@ class ExpenseBot:
                                         if len(row) >= 2 and row[1]:
                                             amount = float(row[1])
                                             total_invested += amount
-                                            # Add to category total
                                             if len(row) >= 3:
                                                 category = row[2]
                                                 category_totals[category] = category_totals.get(category, 0) + amount
@@ -1984,25 +1937,22 @@ class ExpenseBot:
 
                     elif compare_type == 'years':
                         try:
-                            # First get the investment summary
                             result = self.sheets_service.spreadsheets().values().get(
                                 spreadsheetId=self.spreadsheet_id,
                                 range='Investment Summary!A:E'
                             ).execute()
 
-                            # Also get all available sheets
                             sheet_metadata = self.sheets_service.spreadsheets().get(
                                 spreadsheetId=self.spreadsheet_id
                             ).execute()
 
-                            # Find all Overview sheets
                             overview_sheets = [
                                 sheet['properties']['title']
                                 for sheet in sheet_metadata.get('sheets', [])
                                 if 'Overview' in sheet['properties']['title']
                             ]
 
-                            overview_sheets.sort(reverse=True)  # Sort newest to oldest
+                            overview_sheets.sort(reverse=True)
 
                             values = result.get('values', [])
                             if len(values) <= 1:
@@ -2013,9 +1963,8 @@ class ExpenseBot:
 
                                 for sheet_name in overview_sheets:
                                     try:
-                                        year = sheet_name.split()[0]  # Get year from "YYYY Overview"
+                                        year = sheet_name.split()[0]
 
-                                        # Get data from Investment Summary
                                         year_summary = next((row for row in sorted_values if row[0] == year), None)
 
                                         if year_summary:
@@ -2024,13 +1973,12 @@ class ExpenseBot:
                                             roi = float(year_summary[3]) if len(year_summary) > 3 and year_summary[3] else 0
                                             best_category = year_summary[4] if len(year_summary) > 4 else "N/A"
                                         else:
-                                            # If no summary, calculate from Overview sheet
                                             year_result = self.sheets_service.spreadsheets().values().get(
                                                 spreadsheetId=self.spreadsheet_id,
                                                 range=f'{sheet_name}!A:G'
                                             ).execute()
 
-                                            year_values = year_result.get('values', [])[1:]  # Skip header
+                                            year_values = year_result.get('values', [])[1:]
                                             total_invested = sum(float(row[1]) for row in year_values if len(row) > 1 and row[1])
                                             total_returns = sum(float(row[5]) for row in year_values if len(row) > 5 and row[5])
                                             roi = (total_returns / total_invested * 100) if total_invested > 0 else 0
@@ -2042,14 +1990,13 @@ class ExpenseBot:
                                         message += f"ROI: {roi:.1f}%\n"
                                         message += f"Best Category: {best_category}\n"
 
-                                        # Get category breakdown
                                         try:
                                             year_result = self.sheets_service.spreadsheets().values().get(
                                                 spreadsheetId=self.spreadsheet_id,
                                                 range=f'{sheet_name}!A:G'
                                             ).execute()
 
-                                            year_values = year_result.get('values', [])[1:]  # Skip header
+                                            year_values = year_result.get('values', [])[1:]
                                             category_totals = {}
                                             for year_row in year_values:
                                                 if len(year_row) >= 3:
@@ -2129,11 +2076,46 @@ async def setup_bot_application():
 
     if not all([bot_token, spreadsheet_id, google_credentials_json_b64, render_external_url]):
         logger.error("Missing one or more required environment variables. Please check Render environment variables.")
-        # It's crucial to exit or raise here if essential env vars are missing
-        # so the service doesn't try to run with incomplete config.
         raise ValueError("Missing required environment variables for bot setup.")
 
-    bot_instance_global = ExpenseBot(spreadsheet_id, google_credentials_json_b64)
+    # 1. Authenticate Google Sheets credentials
+    credentials = None
+    try:
+        credentials_json = base64.b64decode(google_credentials_json_b64).decode('utf-8')
+        credentials = service_account.Credentials.from_service_account_info(
+            json.loads(credentials_json),
+            scopes=['https://www.googleapis.com/auth/spreadsheets']
+        )
+        logger.info("Google Sheets credentials loaded successfully in async setup.")
+    except Exception as e:
+        logger.error(f"Error loading Google Sheets credentials in async setup: {e}", exc_info=True)
+        # If credentials fail here, the bot cannot function, so we exit.
+        os._exit(1)
+
+    # 2. Build sheets service (now in async context)
+    sheets_service = None
+    if credentials:
+        logger.info("Attempting to build sheets service in async setup.")
+        try:
+            sheets_service = build('sheets', 'v4', credentials=credentials)
+            logger.info("Sheets service built successfully in async setup.")
+        except HttpError as e:
+            logger.error(f"HTTP Error building Google Sheets service in async setup: {e.resp.status} - {e.content.decode()}", exc_info=True)
+            logger.error("Google Sheets service could not be built. Bot functionality requiring sheets will be limited.")
+        except Exception as e:
+            logger.error(f"Generic error building Google Sheets service in async setup: {e}", exc_info=True)
+            logger.error("Google Sheets service could not be built. Bot functionality requiring sheets will be limited.")
+
+    # 3. Instantiate ExpenseBot with the sheets_service
+    bot_instance_global = ExpenseBot(spreadsheet_id, google_credentials_json_b64, sheets_service_instance=sheets_service)
+    
+    # If sheets_service was successfully built, load categories now
+    if sheets_service and not bot_instance_global.categories: # Check if categories are already loaded (e.g., if sheets_service was init with it)
+        logger.info("Sheets service available and categories not loaded. Loading categories now.")
+        bot_instance_global.categories = bot_instance_global._load_categories()
+        logger.info(f"Categories loaded in async setup: {len(bot_instance_global.categories)} items.")
+
+
     telegram_app_instance = Application.builder().token(bot_token).build()
 
     # Register handlers
@@ -2188,11 +2170,7 @@ def _run_async_setup():
         asyncio.run(setup_bot_application())
     except Exception as e:
         logger.error(f"Fatal error during background bot setup: {e}", exc_info=True)
-        # Depending on desired behavior, you might want to exit or just log.
-        # For a web service, exiting might cause Render to restart it, which is often desired.
         os._exit(1) # Force exit if critical setup fails.
 
 # --- Start the background thread after the ASGI app is defined ---
-# This ensures the Flask app is ready before trying to initialize the bot/webhook
-# and avoids asyncio loop conflicts during module import.
 threading.Thread(target=_run_async_setup, daemon=True).start()
