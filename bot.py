@@ -810,12 +810,12 @@ class ExpenseBot:
                 rest_text = ' '.join(args[1:])
 
                 # Split description and details
-                if ',' in rest_text:
-                    description_part, new_details = rest_text.split(',', 1)
+                if ',' in rest_of_text:
+                    description_part, new_details = rest_of_text.split(',', 1)
                     new_description = description_part.strip()
                     new_details = new_details.strip()
                 else:
-                    new_description = rest_text.strip()
+                    new_description = rest_of_text.strip()
                     new_details = last_entry[5] if len(last_entry) > 5 else ""  # Keep old details if not provided
 
                 # Get category for new description
@@ -2055,7 +2055,9 @@ class ExpenseBot:
 
 
 # --- Main setup function ---
-async def setup_bot_application():
+# This function will now be synchronous and block during import.
+# It will run its own asyncio loop for async operations.
+def setup_bot_application_sync():
     global telegram_app_instance
     global bot_instance_global
 
@@ -2068,7 +2070,7 @@ async def setup_bot_application():
         logger.error("Missing one or more required environment variables. Please check Render environment variables.")
         raise ValueError("Missing required environment variables for bot setup.")
 
-    # 1. Authenticate Google Sheets credentials
+    # 1. Authenticate Google Sheets credentials (synchronous part)
     credentials = None
     try:
         credentials_json = base64.b64decode(google_credentials_json_b64).decode('utf-8')
@@ -2076,41 +2078,41 @@ async def setup_bot_application():
             json.loads(credentials_json),
             scopes=['https://www.googleapis.com/auth/spreadsheets']
         )
-        logger.info("Google Sheets credentials loaded successfully in async setup.")
+        logger.info("Google Sheets credentials loaded successfully.")
     except Exception as e:
-        logger.error(f"Error loading Google Sheets credentials in async setup: {e}", exc_info=True)
-        # If credentials fail here, the bot cannot function, so we exit.
-        os._exit(1)
+        logger.error(f"Error loading Google Sheets credentials: {e}", exc_info=True)
+        os._exit(1) # Exit if critical setup fails.
 
-    # 2. Build sheets service (now in async context)
+    # 2. Build sheets service (now synchronous, but can still involve network)
     sheets_service = None
     if credentials:
-        logger.info("Attempting to build sheets service in async setup.")
+        logger.info("Attempting to build sheets service synchronously.")
         try:
+            # This part can still be blocking, but it's now within the main thread
+            # during the initial module import, which is what Uvicorn expects.
             sheets_service = build('sheets', 'v4', credentials=credentials)
-            logger.info("Sheets service built successfully in async setup.")
+            logger.info("Sheets service built successfully synchronously.")
         except HttpError as e:
-            logger.error(f"HTTP Error building Google Sheets service in async setup: {e.resp.status} - {e.content.decode()}", exc_info=True)
+            logger.error(f"HTTP Error building Google Sheets service synchronously: {e.resp.status} - {e.content.decode()}", exc_info=True)
             logger.error("Google Sheets service could not be built. Bot functionality requiring sheets will be limited.")
         except Exception as e:
-            logger.error(f"Generic error building Google Sheets service in async setup: {e}", exc_info=True)
+            logger.error(f"Generic error building Google Sheets service synchronously: {e}", exc_info=True)
             logger.error("Google Sheets service could not be built. Bot functionality requiring sheets will be limited.")
 
     # 3. Instantiate ExpenseBot with the sheets_service
-    # Pass credentials_json_b64 as well, in case it's needed for re-auth or other purposes later
     bot_instance_global = ExpenseBot(spreadsheet_id, google_credentials_json_b64, sheets_service_instance=sheets_service)
     
     # 4. If sheets_service was successfully built, load categories and start scheduler now
     if sheets_service:
         logger.info("Sheets service available. Loading categories and starting scheduler.")
         bot_instance_global.categories = bot_instance_global._load_categories()
-        logger.info(f"Categories loaded in async setup: {len(bot_instance_global.categories)} items.")
+        logger.info(f"Categories loaded: {len(bot_instance_global.categories)} items.")
         bot_instance_global._start_scheduler()
-        logger.info("Scheduler started in async setup.")
+        logger.info("Scheduler started.")
     else:
         logger.warning("Sheets service not available. Skipping category load and scheduler start.")
 
-
+    # Initialize the Telegram Application
     telegram_app_instance = Application.builder().token(bot_token).build()
 
     # Register handlers
@@ -2131,16 +2133,32 @@ async def setup_bot_application():
     telegram_app_instance.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance_global.handle_message))
     telegram_app_instance.add_handler(CallbackQueryHandler(bot_instance_global.button_handler))
 
-    webhook_path = "/webhook"
-    await telegram_app_instance.bot.set_webhook(url=f"{render_external_url}{webhook_path}")
-    logger.info(f"Webhook set to {render_external_url}{webhook_path}")
+    # Set webhook (this must be awaited, so we need an asyncio loop)
+    # Since this function is now synchronous, we run this specific async call
+    # within its own temporary event loop.
+    async def _set_webhook_async():
+        await telegram_app_instance.bot.set_webhook(url=f"{render_external_url}/webhook")
+        logger.info(f"Webhook set to {render_external_url}/webhook")
+        await telegram_app_instance.initialize()
+        logger.info("Telegram Application initialized.")
 
-    await telegram_app_instance.initialize()
-    logger.info("Telegram Application initialized.")
+    # Run the async part of setup using a new event loop
+    try:
+        asyncio.run(_set_webhook_async())
+    except Exception as e:
+        logger.error(f"Error during webhook setup or Telegram app initialization: {e}", exc_info=True)
+        # This is critical, if webhook fails, bot won't receive updates.
+        os._exit(1)
+
 
 # --- Flask Endpoints ---
 @flask_app.route("/webhook", methods=["POST"])
 async def webhook_handler():
+    # Ensure global instances are available
+    if telegram_app_instance is None or bot_instance_global is None:
+        logger.error("Webhook received before bot initialization completed.")
+        return "Bot not ready", 503 # Service Unavailable
+
     try:
         update_json = await request.get_json()
         update = Update.de_json(update_json, telegram_app_instance.bot)
@@ -2153,19 +2171,17 @@ async def webhook_handler():
 @flask_app.route("/", methods=["GET"])
 def health_check():
     logger.info("Health check endpoint hit.")
+    # Indicate bot readiness based on global instances
+    if telegram_app_instance is None or bot_instance_global is None:
+        return "Bot is starting up...", 503
     return "Bot is running!", 200
 
 # --- Uvicorn App Entrypoint ---
 app = WsgiToAsgi(flask_app)
 
-# --- Function to run async initialization in a background thread ---
-def _run_async_setup():
-    """Runs the async bot initialization in its own event loop."""
-    try:
-        asyncio.run(setup_bot_application())
-    except Exception as e:
-        logger.error(f"Fatal error during background bot setup: {e}", exc_info=True)
-        os._exit(1) # Force exit if critical setup fails.
+# --- Call the synchronous setup function directly on module import ---
+# This ensures all global variables are populated before Uvicorn fully loads the 'app'
+logger.info("Starting synchronous bot application setup.")
+setup_bot_application_sync()
+logger.info("Synchronous bot application setup complete.")
 
-# --- Start the background thread after the ASGI app is defined ---
-threading.Thread(target=_run_async_setup, daemon=True).start()
