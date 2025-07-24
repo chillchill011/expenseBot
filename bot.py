@@ -1,5 +1,3 @@
-# expense_bot.py
-
 import os
 import logging
 import json
@@ -10,11 +8,9 @@ import threading
 import time
 import schedule
 
-# Web server imports
 from flask import Flask, request
 from asgiref.wsgi import WsgiToAsgi
 
-# Telegram imports
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -24,12 +20,10 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
-
-# Google Sheets imports
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# --- Basic Configuration ---
+# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -43,136 +37,122 @@ bot_instance_global = None
 
 
 class ExpenseBot:
-    """The main class for the Expense Tracker Bot."""
     def __init__(self, spreadsheet_id: str, credentials_json_b64: str):
+        """Initialize bot with necessary credentials and configurations."""
         self.spreadsheet_id = spreadsheet_id
         self.credentials_json_b64 = credentials_json_b64
 
         try:
-            # Decode base64 credentials and authenticate with Google Sheets
             credentials_json = base64.b64decode(self.credentials_json_b64).decode('utf-8')
             self.credentials = service_account.Credentials.from_service_account_info(
                 json.loads(credentials_json),
                 scopes=['https://www.googleapis.com/auth/spreadsheets']
             )
-            self.sheets_service = build('sheets', 'v4', credentials=self.credentials)
             logger.info("Google Sheets authentication successful.")
         except Exception as e:
-            logger.error(f"Fatal error initializing Google credentials: {e}")
+            logger.error(f"Error initializing credentials: {e}")
             raise
 
+        self.sheets_service = build('sheets', 'v4', credentials=self.credentials)
         self.categories = self._load_categories()
         self._start_scheduler()
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handles the /start command, showing a welcome message and command list."""
+        """Handle the /start command."""
         welcome_message = (
             "Welcome to the Expense Tracker Bot!\n\n"
-            "**Common Commands:**\n"
-            "• **Log Expense:** Just type an amount and description.\n"
-            "  (e.g., `50 milk` or `120 lunch, with a friend`)\n"
-            "• **/add**: Reply to a message to add it as a historical entry.\n"
-            "• **/summary**: View expense summary for various periods.\n"
-            "• **/compare**: Compare expenses between months.\n"
-            "• **/view**: See expenses grouped by category.\n"
-            "• **/status**: Check if the bot is awake and running.\n\n"
-            "Type /help to see the full command list at any time."
+            "Commands:\n"
+            "• Simply type amount and description (e.g., '50 milk' or '50 milk, details')\n"
+            "• /add - Add historic entry (reply to a message)\n"
+            "• /edit - Modify last entry\n"
+            "• /delete - Remove last entry\n"
+            "• /summary - View monthly summary\n"
+            "• /compare - Compare expenses\n"
+            "• /category - Add a new item-to-category mapping\n"
+            "• /view - View categories with expenses\n"
+            "• /invest - Add investment (e.g., /invest 1000, details)\n"
+            "• /inv_compare - View investment summary\n"
+            "• /loan - Add loan data (e.g., /loan 1000, details)\n"
+            "• /loan_compare - View loan summary\n"
+            "• /coldstart or /status - Check if the bot is awake"
         )
-        await update.message.reply_text(welcome_message, parse_mode='Markdown')
-
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Shows the full list of commands."""
-        help_text = (
-            "**Full Command List**\n\n"
-            "**Expenses:**\n"
-            "• `50 milk` - Add a new expense.\n"
-            "• `/add` - (Reply) Add a past expense.\n"
-            "• `/edit <new_amount> <new_desc>` - Modify the last entry.\n"
-            "• `/delete` - Remove the last entry.\n\n"
-            "**Viewing Data:**\n"
-            "• `/summary` - View monthly/yearly summaries.\n"
-            "• `/compare` - Compare expenses across months.\n"
-            "• `/view` - View expenses by category.\n\n"
-            "**Categories:**\n"
-            "• `/category <item_name>` - Map a new item to a category.\n\n"
-            "**Investments & Loans:**\n"
-            "• `/invest <amount>, <details>` - Log an investment.\n"
-            "• `/inv_compare` - View investment summaries.\n"
-            "• `/loan <amount>, <details>` - Log a loan payment.\n"
-            "• `/loan_compare` - View loan summaries.\n\n"
-            "**System:**\n"
-            "• `/status` or `/coldstart` - Check bot status."
-        )
-        await update.message.reply_text(help_text, parse_mode='Markdown')
-
+        await update.message.reply_text(welcome_message)
 
     def _start_scheduler(self):
-        """Starts a background thread to run scheduled tasks."""
+        """Start the scheduler in a separate thread."""
         def run_scheduler():
-            # Schedules the sheet creation check to run at 1 AM server time daily.
             schedule.every().day.at("01:00").do(self._check_and_create_sheet)
-            logger.info("Scheduler for monthly sheet creation is configured.")
+            logger.info("Scheduler for monthly sheet creation is set up.")
             while True:
                 schedule.run_pending()
                 time.sleep(60)
 
-        # Using a daemon thread allows the main program to exit even if the thread is running.
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
         scheduler_thread.start()
 
     def _check_and_create_sheet(self):
-        """Checks if it's the first day of the month to create a new sheet."""
-        # This runs once a day. It only proceeds if the day is '1'.
+        """Check if it's the first day of the month and create a new sheet if needed."""
         if datetime.now().day == 1:
-            logger.info("First day of the month detected. Triggering new sheet creation.")
+            logger.info("First day of the month detected. Creating new sheet.")
             self._create_next_month_sheet()
         else:
             logger.info("Not the first day of the month, skipping sheet creation.")
 
     def _create_next_month_sheet(self):
-        """Creates a new Google Sheet for the current month if it doesn't exist."""
+        """Create a sheet for the next month."""
         try:
-            # This is designed to run on the 1st, so it creates the sheet for the *current* new month.
-            sheet_name = datetime.now().strftime('%Y-%m')
-            logger.info(f"Attempting to create or verify sheet: {sheet_name}")
+            now = datetime.now()
+            # Correctly calculate next month
+            year = now.year if now.month != 12 else now.year + 1
+            month = now.month + 1 if now.month != 12 else 1
+            sheet_name = f"{year}-{month:02d}"
+            
+            logger.info(f"Attempting to create sheet: {sheet_name}")
             self._ensure_monthly_sheet_exists(sheet_name)
         except Exception as e:
-            logger.error(f"Failed to create next month's sheet: {e}")
+            logger.error(f"Error creating next month's sheet: {e}")
 
-    async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """A simple command to confirm that the bot is running."""
-        logger.info("Status command received.")
-        await update.message.reply_text("🟢 Bot is awake and ready to track expenses!")
+    async def coldstart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the /coldstart or /status command."""
+        logger.info("coldstart/status command received.")
+        await update.message.reply_text(
+            "🟢 Bot is awake and ready!\n\n"
+            "You can start logging expenses or use any command."
+        )
 
+    # --- All your other ExpenseBot methods remain unchanged ---
+    # (_load_categories, add_historical_entry, loan, compare_loans, etc.)
+    # I am omitting them here for brevity but you should KEEP them in your file.
+    # Make sure to copy all methods from your original file from `_load_categories`
+    # down to `_add_category_mapping`.
+
+    #<editor-fold desc="Paste all your existing ExpenseBot methods here">
     def _load_categories(self) -> dict:
-        """Loads expense-to-category mappings from the 'Master' sheet."""
+        """Load categories from master sheet."""
         try:
+            print(f"Attempting to access sheet with ID: {self.spreadsheet_id}")
             result = self.sheets_service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
                 range='Master!A2:B'
             ).execute()
-            
+            print("Successfully accessed sheet")
+            print(f"Retrieved data: {result}")
+
             categories = {}
             for row in result.get('values', []):
-                if len(row) >= 2 and row[0] and row[1]:
+                if len(row) >= 2:
                     expense, category = row
-                    categories[expense.lower().strip()] = category.strip()
-            
-            logger.info(f"Loaded {len(categories)} category mappings.")
-            return categories
-        except Exception as e:
-            logger.error(f"Error loading categories from Master sheet: {e}")
-            return {} # Return empty dict on failure to prevent crash
+                    categories[expense.lower()] = category
 
-    # --- PASTE ALL YOUR OTHER ExpenseBot METHODS HERE ---
-    # This includes: add_historical_entry, _create_safe_callback_data, loan,
-    # compare_loans, handle_message, invest, compare_investments, compare_expenses,
-    # show_summary, _get_month_data, _get_relative_month, view_categories,
-    # _get_category_emoji, add_category, edit_last_entry, delete_last_entry,
-    # _get_sheet_id, _ensure_investment_sheets_exist, _ensure_monthly_sheet_exists,
-    # handle_expense, _get_category, _add_expense, button_handler, _add_category_mapping
-    # I am omitting them for brevity, but you MUST include them in your final file.
-    #<editor-fold desc="Paste all your existing ExpenseBot methods here">
+            print(f"Processed categories: {categories}")
+            return categories
+
+        except Exception as e:
+            print(f"Error accessing sheet: {e}")
+            print(f"Using spreadsheet ID: {self.spreadsheet_id}")
+            print(f"Service account email: {self.credentials.service_account_email}")
+            raise
+
     async def add_historical_entry(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Handle /add command to process a replied message as a historical entry.
@@ -2045,29 +2025,26 @@ class ExpenseBot:
     #</editor-fold>
 
 
-# --- Main Application Setup ---
+# --- Main setup function ---
 async def setup_bot_application():
-    """Initializes the bot and sets up all handlers and the webhook."""
-    global telegram_app_instance, bot_instance_global
+    global telegram_app_instance
+    global bot_instance_global
 
-    # Load essential environment variables
     bot_token = os.getenv("TELEGRAM_TOKEN")
     spreadsheet_id = os.getenv("SPREADSHEET_ID")
     google_credentials_json_b64 = os.getenv("GOOGLE_CREDENTIALS_BASE64")
     render_external_url = os.getenv("RENDER_EXTERNAL_URL")
 
     if not all([bot_token, spreadsheet_id, google_credentials_json_b64, render_external_url]):
-        logger.critical("FATAL: Missing one or more required environment variables. The bot cannot start.")
-        exit(1) # Exit if configuration is incomplete
+        logger.error("Missing one or more required environment variables.")
+        exit(1)
 
-    # Create instances of the bot and the Telegram application
     bot_instance_global = ExpenseBot(spreadsheet_id, google_credentials_json_b64)
     telegram_app_instance = Application.builder().token(bot_token).build()
 
-    # Register all command handlers
+    # Register handlers
     telegram_app_instance.add_handler(CommandHandler("start", bot_instance_global.start))
-    telegram_app_instance.add_handler(CommandHandler("help", bot_instance_global.help_command))
-    telegram_app_instance.add_handler(CommandHandler(["status", "coldstart"], bot_instance_global.status))
+    telegram_app_instance.add_handler(CommandHandler(["coldstart", "status"], bot_instance_global.coldstart))
     telegram_app_instance.add_handler(CommandHandler("delete", bot_instance_global.delete_last_entry))
     telegram_app_instance.add_handler(CommandHandler("edit", bot_instance_global.edit_last_entry))
     telegram_app_instance.add_handler(CommandHandler("category", bot_instance_global.add_category))
@@ -2080,66 +2057,43 @@ async def setup_bot_application():
     telegram_app_instance.add_handler(CommandHandler("loan_compare", bot_instance_global.compare_loans))
     telegram_app_instance.add_handler(CommandHandler("add", bot_instance_global.add_historical_entry))
 
-    # Register message and callback query handlers
     telegram_app_instance.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance_global.handle_message))
     telegram_app_instance.add_handler(CallbackQueryHandler(bot_instance_global.button_handler))
 
-    # Set up the webhook URL
-    webhook_path = f"/{bot_token}" # A common practice to use the token as a secret path
-    webhook_url = f"{render_external_url.rstrip('/')}{webhook_path}"
-    
-    await telegram_app_instance.bot.set_webhook(
-        url=webhook_url,
-        allowed_updates=Update.ALL_TYPES # Process all types of updates
-    )
-    logger.info(f"Webhook has been set to {webhook_url}")
+    webhook_path = "/webhook"
+    await telegram_app_instance.bot.set_webhook(url=f"{render_external_url}{webhook_path}")
+    logger.info(f"Webhook set to {render_external_url}{webhook_path}")
 
-    # Initialize the application
     await telegram_app_instance.initialize()
-    logger.info("Telegram Application initialized and ready.")
+    logger.info("Telegram Application initialized.")
 
-
-# --- Flask Web Server Endpoints ---
-@flask_app.route("/webhook/<token>", methods=["POST"])
-async def webhook_handler(token):
-    """This endpoint receives updates from Telegram."""
-    bot_token = os.getenv("TELEGRAM_TOKEN")
-    if token != bot_token:
-        logger.warning("Received a request with an invalid token.")
-        return "Unauthorized", 403
-
+# --- Flask Endpoints ---
+@flask_app.route("/webhook", methods=["POST"])
+async def webhook_handler():
     try:
-        # The `await request.get_json()` is needed for Flask 2.x async routes
         update_json = await request.get_json()
         update = Update.de_json(update_json, telegram_app_instance.bot)
         await telegram_app_instance.process_update(update)
         return "ok"
     except Exception as e:
-        logger.error(f"Error in webhook handler: {e}", exc_info=True)
+        logger.error(f"Error in webhook_handler: {e}", exc_info=True)
         return "Error", 500
 
 @flask_app.route("/", methods=["GET"])
 def health_check():
-    """This is the health check endpoint that Render will ping."""
-    logger.info("Health check endpoint was hit.")
-    return "Bot is alive and listening!", 200
+    logger.info("Health check endpoint hit.")
+    return "Bot is running!", 200
 
 # --- Uvicorn App Entrypoint ---
-# This wraps the Flask app so it can be run by an ASGI server like Uvicorn
 app = WsgiToAsgi(flask_app)
 
-# --- Global Initialization for Uvicorn ---
-# This block ensures the bot setup runs when the Uvicorn server starts.
+# --- Global initialization for Uvicorn ---
 try:
-    # Get the current asyncio event loop
     loop = asyncio.get_event_loop()
     if loop.is_running():
-        # If the loop is already running (common in some environments),
-        # schedule the setup as a task.
         loop.create_task(setup_bot_application())
     else:
-        # Otherwise, run the setup synchronously.
         asyncio.run(setup_bot_application())
 except Exception as e:
-    logger.error(f"Critical error during global application startup: {e}", exc_info=True)
+    logger.error(f"Error during global app init: {e}")
     raise
