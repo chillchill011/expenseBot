@@ -1,12 +1,16 @@
-# render.yaml
+# render.yaml for the Expense Tracker Bot
+
 services:
   - type: web
     name: expense-tracker-bot
     runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
-    healthCheckPath: /webhook  # Add health check
-    startupTimeout: 60        # Give it more time to start
+    # The command to install all packages from your requirements.txt
+    buildCommand: "pip install -r requirements.txt"
+    # The command to start the Uvicorn web server
+    # We run uvicorn as a module to ensure it's found by Python
+    startCommand: "python -m uvicorn bot:app --host 0.0.0.0 --port $PORT"
+    # Render's health check will ping this root URL to see if the service is alive
+    healthCheckPath: /
     envVars:
       - key: TELEGRAM_TOKEN
         sync: false
@@ -14,3 +18,10 @@ services:
         sync: false
       - key: GOOGLE_CREDENTIALS_BASE64
         sync: false
+      # This is a crucial variable that Render provides automatically.
+      # Our code uses it to tell Telegram where to send updates.
+      - key: RENDER_EXTERNAL_URL
+        fromService:
+          type: web
+          name: expense-tracker-bot
+          property: url
