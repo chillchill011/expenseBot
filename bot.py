@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 flask_app = Flask(__name__)
 telegram_app_instance = None
 bot_instance_global = None
+main_event_loop = None # To store the main Uvicorn event loop
 
 
 class ExpenseBot:
@@ -2054,10 +2055,8 @@ class ExpenseBot:
     #</editor-fold>
 
 
-# --- Main setup function ---
-# This function will now be synchronous and block during import.
-# It will run its own asyncio loop for async operations.
-def setup_bot_application_sync():
+# --- Main setup function (synchronous part) ---
+def setup_bot_application_sync_part():
     global telegram_app_instance
     global bot_instance_global
 
@@ -2083,13 +2082,11 @@ def setup_bot_application_sync():
         logger.error(f"Error loading Google Sheets credentials: {e}", exc_info=True)
         os._exit(1) # Exit if critical setup fails.
 
-    # 2. Build sheets service (now synchronous, but can still involve network)
+    # 2. Build sheets service (synchronous part, but can still involve network)
     sheets_service = None
     if credentials:
         logger.info("Attempting to build sheets service synchronously.")
         try:
-            # This part can still be blocking, but it's now within the main thread
-            # during the initial module import, which is what Uvicorn expects.
             sheets_service = build('sheets', 'v4', credentials=credentials)
             logger.info("Sheets service built successfully synchronously.")
         except HttpError as e:
@@ -2112,10 +2109,10 @@ def setup_bot_application_sync():
     else:
         logger.warning("Sheets service not available. Skipping category load and scheduler start.")
 
-    # Initialize the Telegram Application
+    # Initialize the Telegram Application (synchronous part)
     telegram_app_instance = Application.builder().token(bot_token).build()
 
-    # Register handlers
+    # Register handlers (synchronous part)
     telegram_app_instance.add_handler(CommandHandler("start", bot_instance_global.start))
     telegram_app_instance.add_handler(CommandHandler(["coldstart", "status"], bot_instance_global.coldstart))
     telegram_app_instance.add_handler(CommandHandler("delete", bot_instance_global.delete_last_entry))
@@ -2133,23 +2130,28 @@ def setup_bot_application_sync():
     telegram_app_instance.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance_global.handle_message))
     telegram_app_instance.add_handler(CallbackQueryHandler(bot_instance_global.button_handler))
 
-    # Set webhook (this must be awaited, so we need an asyncio loop)
-    # Since this function is now synchronous, we run this specific async call
-    # within its own temporary event loop.
-    async def _set_webhook_async():
-        await telegram_app_instance.bot.set_webhook(url=f"{render_external_url}/webhook")
-        logger.info(f"Webhook set to {render_external_url}/webhook")
-        await telegram_app_instance.initialize()
-        logger.info("Telegram Application initialized.")
+    logger.info("Synchronous bot application setup complete. Telegram Application built. Webhook setup will be done asynchronously.")
 
-    # Run the async part of setup using a new event loop
-    try:
-        asyncio.run(_set_webhook_async())
-    except Exception as e:
-        logger.error(f"Error during webhook setup or Telegram app initialization: {e}", exc_info=True)
-        # This is critical, if webhook fails, bot won't receive updates.
-        os._exit(1)
 
+# --- Asynchronous startup tasks for Telegram bot ---
+async def telegram_bot_async_startup_tasks():
+    global telegram_app_instance, main_event_loop
+    render_external_url = os.getenv("RENDER_EXTERNAL_URL")
+
+    if telegram_app_instance and render_external_url:
+        try:
+            logger.info("Running Telegram Application initialization and webhook setup.")
+            await telegram_app_instance.initialize()
+            webhook_url = f"{render_external_url}/webhook"
+            await telegram_app_instance.bot.set_webhook(url=webhook_url)
+            logger.info(f"Webhook set to {webhook_url}")
+            logger.info("Telegram Application fully initialized and webhook set.")
+        except Exception as e:
+            logger.error(f"Error during Telegram bot startup tasks: {e}", exc_info=True)
+            # Log the error, but don't os._exit(1) here, as the main server might still be running.
+            pass
+    else:
+        logger.warning("Telegram Application or RENDER_EXTERNAL_URL not available for async startup tasks.")
 
 # --- Flask Endpoints ---
 @flask_app.route("/webhook", methods=["POST"])
@@ -2180,8 +2182,34 @@ def health_check():
 app = WsgiToAsgi(flask_app)
 
 # --- Call the synchronous setup function directly on module import ---
-# This ensures all global variables are populated before Uvicorn fully loads the 'app'
-logger.info("Starting synchronous bot application setup.")
-setup_bot_application_sync()
-logger.info("Synchronous bot application setup complete.")
+logger.info("Starting synchronous bot application setup part.")
+setup_bot_application_sync_part()
+
+# --- Schedule the asynchronous startup tasks to run on Uvicorn's event loop ---
+def run_async_startup_in_main_thread_loop():
+    global main_event_loop
+    # Wait for the event loop to be running in the main thread (Uvicorn's loop)
+    # This loop will be set by Uvicorn.
+    while True:
+        try:
+            main_event_loop = asyncio.get_event_loop()
+            if main_event_loop.is_running():
+                logger.info("Main event loop detected as running. Scheduling async startup tasks.")
+                main_event_loop.call_soon_threadsafe(
+                    asyncio.create_task, telegram_bot_async_startup_tasks()
+                )
+                break
+        except RuntimeError:
+            # Event loop is not yet running, wait and retry
+            time.sleep(0.1)
+        except Exception as e:
+            logger.error(f"Error getting or scheduling on main event loop: {e}", exc_info=True)
+            break # Exit if unexpected error
+
+# Start a daemon thread to run the async startup tasks.
+# This thread will wait until Uvicorn's event loop is active.
+startup_thread = threading.Thread(target=run_async_startup_in_main_thread_loop, daemon=True)
+startup_thread.start()
+
+logger.info("Background thread for async startup tasks initiated.")
 
