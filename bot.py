@@ -1715,8 +1715,9 @@ class ExpenseBot:
                     for i in range(3):
                         month = self._get_relative_month(i)
                         data = self._get_month_data(month)
-                        message += f"{month}: ₹{data['total']:.2f}\n"
-                        total += data['total']
+                        if data['total'] > 0: # Only add if there are expenses
+                            message += f"{month}: ₹{data['total']:.2f}\n"
+                            total += data['total']
                     message += f"\nTotal: ₹{total:.2f}"
 
                 elif period in ['year', 'lastyear']:
@@ -2036,8 +2037,10 @@ async def setup_bot_application():
     render_external_url = os.getenv("RENDER_EXTERNAL_URL")
 
     if not all([bot_token, spreadsheet_id, google_credentials_json_b64, render_external_url]):
-        logger.error("Missing one or more required environment variables.")
-        exit(1)
+        logger.error("Missing one or more required environment variables. Please check Render environment variables.")
+        # It's crucial to exit or raise here if essential env vars are missing
+        # so the service doesn't try to run with incomplete config.
+        raise ValueError("Missing required environment variables for bot setup.")
 
     bot_instance_global = ExpenseBot(spreadsheet_id, google_credentials_json_b64)
     telegram_app_instance = Application.builder().token(bot_token).build()
@@ -2087,13 +2090,19 @@ def health_check():
 # --- Uvicorn App Entrypoint ---
 app = WsgiToAsgi(flask_app)
 
-# --- Global initialization for Uvicorn ---
-try:
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        loop.create_task(setup_bot_application())
-    else:
+# --- Function to run async initialization in a background thread ---
+def _run_async_setup():
+    """Runs the async bot initialization in its own event loop."""
+    try:
         asyncio.run(setup_bot_application())
-except Exception as e:
-    logger.error(f"Error during global app init: {e}")
-    raise
+    except Exception as e:
+        logger.error(f"Fatal error during background bot setup: {e}", exc_info=True)
+        # Depending on desired behavior, you might want to exit or just log.
+        # For a web service, exiting might cause Render to restart it, which is often desired.
+        os._exit(1) # Force exit if critical setup fails.
+
+# --- Start the background thread after the ASGI app is defined ---
+# This ensures the Flask app is ready before trying to initialize the bot/webhook
+# and avoids asyncio loop conflicts during module import.
+threading.Thread(target=_run_async_setup, daemon=True).start()
+
